@@ -491,6 +491,36 @@ declare namespace Api {
       agentEvents?: AgentStepEvent[];
     }
 
+    interface AgentRetryLaunch {
+      generationId: string;
+      retryOfGenerationId: string;
+      conversationId: string;
+      attemptNumber: number;
+    }
+
+    interface AgentRunSummary {
+      generationId: string;
+      conversationId: string;
+      question: string;
+      status: 'FAILED' | 'INTERRUPTED' | 'CANCELLED';
+      currentStage?: string;
+      errorMessage?: string;
+      retryOfGenerationId?: string;
+      attemptNumber: number;
+      createdAt: string;
+      updatedAt: string;
+      steps: Array<{
+        stepId: string;
+        stage: string;
+        status: AgentStepEvent['status'];
+        title: string;
+        detail?: string;
+        toolName?: string;
+        occurredAt: string;
+        metadata?: AgentStepEvent['metadata'];
+      }>;
+    }
+
     interface ConversationSession {
       id: number;
       conversationId: string;

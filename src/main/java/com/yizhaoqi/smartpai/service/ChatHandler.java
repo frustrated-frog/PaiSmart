@@ -120,39 +120,8 @@ public class ChatHandler {
                     chatGenerationStateService.createGeneration(userId, conversationId, userMessage);
             generationId = generation.generationId();
             agentRunService.start(generationId, userId, conversationId, userMessage);
-            final String finalConversationId = conversationId;
-            final String finalGenerationId = generationId;
             logger.info("会话ID: {}, 用户ID: {}", conversationId, userId);
-            sendGenerationStart(userId, finalGenerationId, finalConversationId);
-            sendAgentStep(userId, finalGenerationId, finalConversationId,
-                    "intake", "understanding", "running", "理解你的问题",
-                    "正在识别目标、上下文以及是否需要调用知识库工具", null);
-
-            // 为当前生成任务创建响应构建器
-            responseBuilders.put(finalGenerationId, new StringBuilder());
-            // 创建一个CompletableFuture来跟踪响应完成状态
-            CompletableFuture<String> responseFuture = new CompletableFuture<>();
-            responseFutures.put(finalGenerationId, responseFuture);
-
-            // 2. 获取对话历史
-            List<Map<String, String>> history = getConversationHistory(conversationId);
-            logger.debug("获取到 {} 条历史对话", history.size());
-
-            // 3. 异步执行 ReAct 决策循环：模型按需返回 tool_calls，避免在 WebSocket 处理线程上阻塞 90s+ 的工具流
-            try {
-                chatMonitorExecutor.execute(() ->
-                        runReActLoopSafely(userId, userMessage, finalConversationId, finalGenerationId, history, responseFuture));
-            } catch (RejectedExecutionException ex) {
-                logger.warn("聊天处理线程池已满，generationId: {}", finalGenerationId);
-                RuntimeException busyException = new RuntimeException("系统繁忙，请稍后重试");
-                sendAgentStep(userId, finalGenerationId, finalConversationId,
-                        "intake", "understanding", "failed", "理解你的问题",
-                        "Agent 执行队列繁忙，请稍后重试", null);
-                markFailedGeneration(finalGenerationId, busyException.getMessage());
-                handleError(userId, finalGenerationId, busyException);
-                sendCompletionNotification(userId, finalGenerationId, finalConversationId, true, false);
-                cleanupGenerationState(finalGenerationId, ex);
-            }
+            launchGeneration(userId, userMessage, conversationId, generationId, null);
 
         } catch (RateLimitExceededException e) {
             sendRateLimitMessage(userId, null, e);
@@ -163,6 +132,76 @@ public class ChatHandler {
                 cleanupGenerationState(generationId, e);
             }
             handleError(userId, generationId, e);
+        }
+    }
+
+    /**
+     * 从持久化运行账本重新发起一次执行。新的 generationId 保证事件流、Token 账单和回答均可独立审计，
+     * retryOfGenerationId 与 attemptNumber 则保留完整运行谱系。
+     */
+    public RetryLaunch retryRun(String userId, String sourceGenerationId) {
+        rateLimitService.checkChatByUser(userId);
+        chatGenerationStateService.getActiveGenerationForUser(userId).ifPresent(active -> {
+            throw new IllegalStateException("当前已有 Agent 任务正在执行，请完成或停止后再重试");
+        });
+
+        AgentRunService.RetryCandidate source = agentRunService.getRetryCandidate(sourceGenerationId, userId);
+        conversationService.switchCurrentConversation(Long.parseLong(userId), source.conversationId());
+        ChatGenerationStateService.GenerationSnapshot generation = chatGenerationStateService.createGeneration(
+                userId,
+                source.conversationId(),
+                source.question()
+        );
+        agentRunService.startRetry(generation.generationId(), source);
+        launchGeneration(userId, source.question(), source.conversationId(), generation.generationId(), source);
+        return new RetryLaunch(
+                generation.generationId(),
+                source.generationId(),
+                source.conversationId(),
+                source.attemptNumber() + 1
+        );
+    }
+
+    private void launchGeneration(String userId,
+                                  String userMessage,
+                                  String conversationId,
+                                  String generationId,
+                                  AgentRunService.RetryCandidate retrySource) {
+        sendGenerationStart(userId, generationId, conversationId);
+        if (retrySource != null) {
+            sendAgentStep(userId, generationId, conversationId,
+                    "retry-lineage", "recovery", "completed", "恢复 Agent 运行",
+                    "已从第 " + retrySource.attemptNumber() + " 次运行的 checkpoint 创建新尝试",
+                    null,
+                    Map.of(
+                            "retryOfGenerationId", retrySource.generationId(),
+                            "lastStage", retrySource.lastStage() == null ? "unknown" : retrySource.lastStage(),
+                            "attemptNumber", retrySource.attemptNumber() + 1
+                    ));
+        }
+        sendAgentStep(userId, generationId, conversationId,
+                "intake", "understanding", "running", "理解你的问题",
+                "正在识别目标、上下文以及是否需要调用知识库工具", null);
+
+        responseBuilders.put(generationId, new StringBuilder());
+        CompletableFuture<String> responseFuture = new CompletableFuture<>();
+        responseFutures.put(generationId, responseFuture);
+        List<Map<String, String>> history = getConversationHistory(conversationId);
+        logger.debug("获取到 {} 条历史对话", history.size());
+
+        try {
+            chatMonitorExecutor.execute(() ->
+                    runReActLoopSafely(userId, userMessage, conversationId, generationId, history, responseFuture));
+        } catch (RejectedExecutionException exception) {
+            logger.warn("聊天处理线程池已满，generationId: {}", generationId);
+            RuntimeException busyException = new RuntimeException("系统繁忙，请稍后重试");
+            sendAgentStep(userId, generationId, conversationId,
+                    "intake", "understanding", "failed", "理解你的问题",
+                    "Agent 执行队列繁忙，请稍后重试", null);
+            markFailedGeneration(generationId, busyException.getMessage());
+            handleError(userId, generationId, busyException);
+            sendCompletionNotification(userId, generationId, conversationId, true, false);
+            cleanupGenerationState(generationId, exception);
         }
     }
 
@@ -1232,6 +1271,14 @@ public class ChatHandler {
             String evidenceSnippet,
             Double score,
             Integer chunkId
+    ) {
+    }
+
+    public record RetryLaunch(
+            String generationId,
+            String retryOfGenerationId,
+            String conversationId,
+            int attemptNumber
     ) {
     }
 

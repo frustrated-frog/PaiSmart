@@ -40,6 +40,12 @@ public class AgentRun {
     @Column(name = "current_stage", length = 48)
     private String currentStage;
 
+    @Column(name = "retry_of_generation_id", length = 64)
+    private String retryOfGenerationId;
+
+    @Column(name = "attempt_number", nullable = false)
+    private Integer attemptNumber = 1;
+
     @Lob
     @Column(name = "answer")
     private String answer;

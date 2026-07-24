@@ -127,6 +127,46 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     return data || null;
   }
 
+  async function retryAgentRun(sourceGenerationId: string, question: string) {
+    const retryQuestion = question.trim();
+    if (!sourceGenerationId || !retryQuestion) {
+      return false;
+    }
+
+    const userMessage: Api.Chat.Message = {
+      role: 'user',
+      content: retryQuestion,
+      conversationId: conversationId.value
+    };
+    const assistantMessage: Api.Chat.Message = {
+      role: 'assistant',
+      content: '',
+      status: 'pending',
+      conversationId: conversationId.value,
+      toolEvents: [],
+      agentEvents: []
+    };
+    list.value.push(userMessage, assistantMessage);
+
+    const { error, data } = await request<Api.Chat.AgentRetryLaunch>({
+      url: `chat/agent-runs/${sourceGenerationId}/retry`,
+      method: 'POST'
+    });
+    if (error || !data) {
+      assistantMessage.status = 'error';
+      assistantMessage.content = '重试任务创建失败，请确认当前没有其他 Agent 任务正在运行';
+      return false;
+    }
+
+    assistantMessage.generationId = data.generationId;
+    assistantMessage.conversationId = data.conversationId;
+    userMessage.generationId = data.generationId;
+    userMessage.conversationId = data.conversationId;
+    conversationId.value = data.conversationId;
+    await loadSessions();
+    return true;
+  }
+
   async function syncGenerationAfterReconnect() {
     const pendingGenerationId = getPendingGenerationId();
     if (pendingGenerationId) {
@@ -195,7 +235,44 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
       params: { conversationId: cid }
     });
     if (!error && data) {
-      list.value = data;
+      const { error: runsError, data: recoverableRuns } = await request<Api.Chat.AgentRunSummary[]>({
+        url: 'chat/agent-runs',
+        params: { conversationId: cid }
+      });
+      const restoredMessages = runsError
+        ? []
+        : (recoverableRuns || []).flatMap((run): Api.Chat.Message[] => [
+            {
+              role: 'user',
+              content: run.question,
+              conversationId: run.conversationId,
+              generationId: run.generationId,
+              timestamp: run.createdAt
+            },
+            {
+              role: 'assistant',
+              content: run.errorMessage || (run.status === 'CANCELLED' ? '本次 Agent 运行已停止' : '本次 Agent 运行已中断'),
+              status: run.status === 'CANCELLED' ? 'finished' : 'error',
+              conversationId: run.conversationId,
+              generationId: run.generationId,
+              timestamp: run.updatedAt,
+              agentEvents: run.steps.map(step => ({
+                stepId: step.stepId,
+                stage: step.stage,
+                status: step.status,
+                title: step.title,
+                detail: step.detail,
+                toolName: step.toolName,
+                timestamp: Date.parse(step.occurredAt),
+                metadata: step.metadata
+              }))
+            }
+          ]);
+      list.value = [...data, ...restoredMessages].sort((left, right) => {
+        const leftTime = left.timestamp ? Date.parse(left.timestamp) : 0;
+        const rightTime = right.timestamp ? Date.parse(right.timestamp) : 0;
+        return leftTime - rightTime;
+      });
     }
   }
 
@@ -413,6 +490,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     startRateLimitCountdown,
     handleAuthReset,
     fetchGenerationSnapshot,
+    retryAgentRun,
     upsertGenerationSnapshot,
     syncGenerationAfterReconnect,
     loadSessions,

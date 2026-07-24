@@ -22,6 +22,7 @@ function handleCopy(content: string) {
 
 const chatStore = useChatStore();
 const feedbackSubmitting = ref<Record<string, boolean>>({});
+const retrySubmitting = ref(false);
 
 function getMessageFeedbackKey(message: Api.Chat.Message) {
   return message.generationId || `${message.conversationId || 'unknown'}:${message.timestamp || ''}`;
@@ -112,6 +113,25 @@ const agentTraceSummary = computed(() => {
   }
   return `已完成 ${steps.length} 个执行步骤`;
 });
+
+const canRetryRun = computed(() => Boolean(
+  props.msg.role === 'assistant'
+  && props.msg.generationId
+  && (props.msg.status === 'error' || agentSteps.value.some(step => step.status === 'cancelled'))
+));
+
+async function handleRetryRun() {
+  if (!props.msg.generationId || retrySubmitting.value || !props.retrievalQueryFallback?.trim()) {
+    return;
+  }
+  retrySubmitting.value = true;
+  const succeeded = await chatStore.retryAgentRun(props.msg.generationId, props.retrievalQueryFallback);
+  retrySubmitting.value = false;
+  if (succeeded) {
+    window.$message?.success('已从 checkpoint 创建新的 Agent 运行');
+    chatStore.scrollToBottom?.();
+  }
+}
 
 function getAgentStepStatusLabel(status: Api.Chat.AgentStepEvent['status']) {
   return {
@@ -563,6 +583,19 @@ async function handleSourceFileClick(fileInfo: {
         <template #icon>
           <icon-material-symbols:thumb-up-outline-rounded />
         </template>
+      </NButton>
+      <NButton
+        v-if="canRetryRun"
+        quaternary
+        title="从 checkpoint 重新运行"
+        aria-label="重新运行 Agent"
+        :loading="retrySubmitting"
+        @click="handleRetryRun"
+      >
+        <template #icon>
+          <icon-material-symbols:replay-rounded />
+        </template>
+        重新运行
       </NButton>
       <NButton
         v-if="msg.role === 'assistant'"

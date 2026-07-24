@@ -6,6 +6,8 @@ import com.yizhaoqi.smartpai.service.AgentMemoryService;
 import com.yizhaoqi.smartpai.service.AgentRunService;
 import com.yizhaoqi.smartpai.evaluation.RetrievalEvaluationService;
 import com.yizhaoqi.smartpai.service.ChatGenerationStateService;
+import com.yizhaoqi.smartpai.service.ChatHandler;
+import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
 import com.yizhaoqi.smartpai.utils.JwtUtils;
 import com.yizhaoqi.smartpai.utils.LogUtils;
 import org.springframework.http.ResponseEntity;
@@ -16,6 +18,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
@@ -33,19 +36,22 @@ public class ChatController {
     private final AgentMemoryService agentMemoryService;
     private final AgentRunService agentRunService;
     private final RetrievalEvaluationService retrievalEvaluationService;
+    private final ChatHandler chatHandler;
 
     public ChatController(JwtUtils jwtUtils,
                           ChatGenerationStateService chatGenerationStateService,
                           AgentToolRegistry agentToolRegistry,
                           AgentMemoryService agentMemoryService,
                           AgentRunService agentRunService,
-                          RetrievalEvaluationService retrievalEvaluationService) {
+                          RetrievalEvaluationService retrievalEvaluationService,
+                          ChatHandler chatHandler) {
         this.jwtUtils = jwtUtils;
         this.chatGenerationStateService = chatGenerationStateService;
         this.agentToolRegistry = agentToolRegistry;
         this.agentMemoryService = agentMemoryService;
         this.agentRunService = agentRunService;
         this.retrievalEvaluationService = retrievalEvaluationService;
+        this.chatHandler = chatHandler;
     }
     
     /**
@@ -108,6 +114,43 @@ public class ChatController {
             return ResponseEntity.status(404).body(responseBody(404, "Agent 运行记录不存在", null));
         }
         return ResponseEntity.ok(responseBody(200, "获取 Agent 运行记录成功", detail));
+    }
+
+    @GetMapping("/agent-runs")
+    public ResponseEntity<?> listRecoverableAgentRuns(
+            @RequestParam String conversationId,
+            @RequestHeader("Authorization") String token) {
+        String userId = extractValidatedUserId(token);
+        if (userId == null) {
+            return ResponseEntity.status(401).body(responseBody(401, "Invalid token", null));
+        }
+        return ResponseEntity.ok(responseBody(
+                200,
+                "获取可恢复 Agent 运行成功",
+                agentRunService.listRecoverable(userId, conversationId)
+        ));
+    }
+
+    @PostMapping("/agent-runs/{generationId}/retry")
+    public ResponseEntity<?> retryAgentRun(
+            @PathVariable String generationId,
+            @RequestHeader("Authorization") String token) {
+        String userId = extractValidatedUserId(token);
+        if (userId == null) {
+            return ResponseEntity.status(401).body(responseBody(401, "Invalid token", null));
+        }
+        try {
+            ChatHandler.RetryLaunch retry = chatHandler.retryRun(userId, generationId);
+            return ResponseEntity.accepted().body(responseBody(202, "Agent 重试任务已创建", retry));
+        } catch (RateLimitExceededException exception) {
+            return ResponseEntity.status(429).body(responseBody(429, exception.getMessage(), Map.of(
+                    "retryAfterSeconds", exception.getRetryAfterSeconds()
+            )));
+        } catch (IllegalStateException exception) {
+            return ResponseEntity.status(409).body(responseBody(409, exception.getMessage(), null));
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(responseBody(400, exception.getMessage(), null));
+        }
     }
 
     @GetMapping("/memories")
