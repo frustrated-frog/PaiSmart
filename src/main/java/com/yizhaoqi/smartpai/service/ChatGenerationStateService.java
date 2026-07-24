@@ -9,7 +9,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -37,10 +39,28 @@ public class ChatGenerationStateService {
 
         // 写入顺序：先把可读子项准备好，最后再发布 active key，避免读取者拿到 active key 后却查不到 meta/content。
         redisTemplate.delete(referenceKey(generationId));
+        redisTemplate.delete(agentEventKey(generationId));
         redisTemplate.opsForValue().set(contentKey(generationId), "", GENERATION_TTL);
         writeMeta(meta);
         redisTemplate.opsForValue().set(activeGenerationKey(userId), generationId, GENERATION_TTL);
-        return toSnapshot(meta, "", Collections.emptyMap());
+        return toSnapshot(meta, "", Collections.emptyMap(), Collections.emptyList());
+    }
+
+    /**
+     * 追加一条 Agent 执行事件。使用 Redis List 保存事件流，使浏览器断线重连后仍能恢复执行轨迹。
+     * 同一个 stepId 可以先写 RUNNING，再写 COMPLETED/FAILED，前端按 stepId 合并状态。
+     */
+    public void appendAgentEvent(String generationId, AgentEventSnapshot event) {
+        if (event == null) {
+            return;
+        }
+        try {
+            redisTemplate.opsForList().rightPush(agentEventKey(generationId), objectMapper.writeValueAsString(event));
+            redisTemplate.expire(agentEventKey(generationId), GENERATION_TTL);
+            touch(generationId);
+        } catch (Exception e) {
+            logger.warn("保存 Agent 执行事件失败: generationId={}, stepId={}", generationId, event.stepId(), e);
+        }
     }
 
     public void appendChunk(String generationId, String chunk) {
@@ -90,7 +110,7 @@ public class ChatGenerationStateService {
 
         String content = Optional.ofNullable(redisTemplate.opsForValue().get(contentKey(generationId))).orElse("");
         Map<String, Map<String, Object>> references = readReferenceMappings(generationId);
-        return Optional.of(toSnapshot(meta, content, references));
+        return Optional.of(toSnapshot(meta, content, references, readAgentEvents(generationId)));
     }
 
     public Optional<GenerationSnapshot> getGenerationForUser(String generationId, String userId) {
@@ -154,6 +174,7 @@ public class ChatGenerationStateService {
         writeMeta(updated);
         redisTemplate.expire(contentKey(generationId), GENERATION_TTL);
         redisTemplate.expire(referenceKey(generationId), GENERATION_TTL);
+        redisTemplate.expire(agentEventKey(generationId), GENERATION_TTL);
         redisTemplate.opsForValue().set(activeGenerationKey(meta.userId()), generationId, GENERATION_TTL);
     }
 
@@ -200,9 +221,27 @@ public class ChatGenerationStateService {
         }
     }
 
+    private List<AgentEventSnapshot> readAgentEvents(String generationId) {
+        List<String> rawEvents = redisTemplate.opsForList().range(agentEventKey(generationId), 0, -1);
+        if (rawEvents == null || rawEvents.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<AgentEventSnapshot> events = new ArrayList<>(rawEvents.size());
+        for (String raw : rawEvents) {
+            try {
+                events.add(objectMapper.readValue(raw, AgentEventSnapshot.class));
+            } catch (Exception e) {
+                logger.warn("解析 Agent 执行事件失败: generationId={}", generationId, e);
+            }
+        }
+        return events;
+    }
+
     private GenerationSnapshot toSnapshot(GenerationMeta meta,
                                           String content,
-                                          Map<String, Map<String, Object>> referenceMappings) {
+                                          Map<String, Map<String, Object>> referenceMappings,
+                                          List<AgentEventSnapshot> agentEvents) {
         return new GenerationSnapshot(
                 meta.generationId(),
                 meta.userId(),
@@ -213,7 +252,8 @@ public class ChatGenerationStateService {
                 meta.createdAt(),
                 meta.updatedAt(),
                 meta.errorMessage(),
-                referenceMappings == null ? Collections.emptyMap() : referenceMappings
+                referenceMappings == null ? Collections.emptyMap() : referenceMappings,
+                agentEvents == null ? Collections.emptyList() : agentEvents
         );
     }
 
@@ -227,6 +267,10 @@ public class ChatGenerationStateService {
 
     private String referenceKey(String generationId) {
         return "chat:generation:" + generationId + ":refs";
+    }
+
+    private String agentEventKey(String generationId) {
+        return "chat:generation:" + generationId + ":agent_events";
     }
 
     private String activeGenerationKey(String userId) {
@@ -262,7 +306,19 @@ public class ChatGenerationStateService {
             String createdAt,
             String updatedAt,
             String errorMessage,
-            Map<String, Map<String, Object>> referenceMappings
+            Map<String, Map<String, Object>> referenceMappings,
+            List<AgentEventSnapshot> agentEvents
+    ) {
+    }
+
+    public record AgentEventSnapshot(
+            String stepId,
+            String stage,
+            String status,
+            String title,
+            String detail,
+            String toolName,
+            long timestamp
     ) {
     }
 }

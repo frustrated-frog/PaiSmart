@@ -56,6 +56,7 @@ public class ChatHandler {
     private final ChatGenerationStateService chatGenerationStateService;
     private final ChatSessionRegistry chatSessionRegistry;
     private final AgentToolRegistry agentToolRegistry;
+    private final AgentRunService agentRunService;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
     
@@ -80,6 +81,7 @@ public class ChatHandler {
                       ChatGenerationStateService chatGenerationStateService,
                       ChatSessionRegistry chatSessionRegistry,
                       AgentToolRegistry agentToolRegistry,
+                      AgentRunService agentRunService,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
         this.redisTemplate = redisTemplate;
@@ -90,6 +92,7 @@ public class ChatHandler {
         this.chatGenerationStateService = chatGenerationStateService;
         this.chatSessionRegistry = chatSessionRegistry;
         this.agentToolRegistry = agentToolRegistry;
+        this.agentRunService = agentRunService;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
     }
@@ -107,10 +110,14 @@ public class ChatHandler {
             ChatGenerationStateService.GenerationSnapshot generation =
                     chatGenerationStateService.createGeneration(userId, conversationId, userMessage);
             generationId = generation.generationId();
+            agentRunService.start(generationId, userId, conversationId, userMessage);
             final String finalConversationId = conversationId;
             final String finalGenerationId = generationId;
             logger.info("会话ID: {}, 用户ID: {}", conversationId, userId);
             sendGenerationStart(userId, finalGenerationId, finalConversationId);
+            sendAgentStep(userId, finalGenerationId, finalConversationId,
+                    "intake", "understanding", "running", "理解你的问题",
+                    "正在识别目标、上下文以及是否需要调用知识库工具", null);
 
             // 为当前生成任务创建响应构建器
             responseBuilders.put(finalGenerationId, new StringBuilder());
@@ -129,7 +136,10 @@ public class ChatHandler {
             } catch (RejectedExecutionException ex) {
                 logger.warn("聊天处理线程池已满，generationId: {}", finalGenerationId);
                 RuntimeException busyException = new RuntimeException("系统繁忙，请稍后重试");
-                chatGenerationStateService.markFailed(finalGenerationId, busyException.getMessage());
+                sendAgentStep(userId, finalGenerationId, finalConversationId,
+                        "intake", "understanding", "failed", "理解你的问题",
+                        "Agent 执行队列繁忙，请稍后重试", null);
+                markFailedGeneration(finalGenerationId, busyException.getMessage());
                 handleError(userId, finalGenerationId, busyException);
                 sendCompletionNotification(userId, finalGenerationId, finalConversationId, true, false);
                 cleanupGenerationState(finalGenerationId, ex);
@@ -140,7 +150,7 @@ public class ChatHandler {
         } catch (Exception e) {
             logger.error("处理消息错误: {}", e.getMessage(), e);
             if (generationId != null) {
-                chatGenerationStateService.markFailed(generationId, e.getMessage());
+                markFailedGeneration(generationId, e.getMessage());
                 cleanupGenerationState(generationId, e);
             }
             handleError(userId, generationId, e);
@@ -157,7 +167,10 @@ public class ChatHandler {
             runReActLoop(userId, userMessage, conversationId, generationId, history, responseFuture);
         } catch (Exception e) {
             logger.error("ReAct 循环执行失败: generationId={}", generationId, e);
-            chatGenerationStateService.markFailed(generationId, e.getMessage());
+            sendAgentStep(userId, generationId, conversationId,
+                    "agent-run", "orchestration", "failed", "Agent 执行中断",
+                    safeErrorMessage(e), null);
+            markFailedGeneration(generationId, e.getMessage());
             handleError(userId, generationId, e);
             sendCompletionNotification(userId, generationId, conversationId, true, false);
             cleanupGenerationState(generationId, e);
@@ -170,6 +183,9 @@ public class ChatHandler {
                               String generationId,
                               List<Map<String, String>> history,
                               CompletableFuture<String> responseFuture) {
+        sendAgentStep(userId, generationId, conversationId,
+                "intake", "understanding", "completed", "理解你的问题",
+                history.isEmpty() ? "已完成意图识别" : "已结合近期对话完成意图识别", null);
         List<Map<String, Object>> messages = llmProviderRouter.buildReActMessages(
                 userMessage,
                 "",
@@ -185,6 +201,12 @@ public class ChatHandler {
                 return;
             }
 
+            String reasoningStepId = "reasoning-" + round;
+            String reasoningTitle = round == 1 ? "制定行动并选择工具" : "整合工具结果继续推理";
+            sendAgentStep(userId, generationId, conversationId,
+                    reasoningStepId, "reasoning", "running", reasoningTitle,
+                    "第 " + round + " 轮决策", null);
+
             LlmProviderRouter.ReActTurn turn = streamReActTurnBlocking(
                     userId, conversationId, generationId, messages, agentToolRegistry.getTools());
             if (turn == null) {
@@ -196,11 +218,18 @@ public class ChatHandler {
             totalCompletionTokens += turn.completionTokens();
 
             if (turn.toolCalls().isEmpty()) {
+                sendAgentStep(userId, generationId, conversationId,
+                        reasoningStepId, "reasoning", "completed", reasoningTitle,
+                        "已完成推理并生成回答", null);
                 finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
                         responseBuilders.get(generationId),
                         new LlmProviderRouter.StreamCompletion(turn.finishReason(), totalPromptTokens, totalCompletionTokens, turn.content().length()));
                 return;
             }
+
+            sendAgentStep(userId, generationId, conversationId,
+                    reasoningStepId, "reasoning", "completed", reasoningTitle,
+                    "已规划 " + turn.toolCalls().size() + " 个工具动作", null);
 
             messages.add(turn.assistantMessage());
             for (LlmProviderRouter.ToolCallDecision toolCall : turn.toolCalls()) {
@@ -234,6 +263,9 @@ public class ChatHandler {
                 "role", "user",
                 "content", "ReAct 轮次预算已用尽，请不要再调用工具，直接基于已有 tool 结果给出最终回答。"
         ));
+        sendAgentStep(userId, generationId, conversationId,
+                "reasoning-final", "reasoning", "running", "收敛最终结论",
+                "工具轮次已结束，正在基于已有证据生成最终回答", null);
         LlmProviderRouter.ReActTurn finalTurn = streamReActTurnBlocking(
                 userId, conversationId, generationId, messages, List.of());
         if (finalTurn == null) {
@@ -242,6 +274,9 @@ public class ChatHandler {
         }
         totalPromptTokens += finalTurn.promptTokens();
         totalCompletionTokens += finalTurn.completionTokens();
+        sendAgentStep(userId, generationId, conversationId,
+                "reasoning-final", "reasoning", "completed", "收敛最终结论",
+                "已完成最终回答", null);
         finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
                 responseBuilders.get(generationId),
                 new LlmProviderRouter.StreamCompletion(finalTurn.finishReason(), totalPromptTokens, totalCompletionTokens, finalTurn.content().length()));
@@ -424,7 +459,7 @@ public class ChatHandler {
                     if (responseFuture.completeExceptionally(exception)) {
                         handleError(userId, generationId, exception);
                         sendCompletionNotification(userId, generationId, conversationId, true, false);
-                        chatGenerationStateService.markFailed(generationId, exception.getMessage());
+                        markFailedGeneration(generationId, exception.getMessage());
                         cleanupGenerationState(generationId, exception);
                     }
                 } catch (InterruptedException e) {
@@ -434,7 +469,7 @@ public class ChatHandler {
                 } catch (Exception e) {
                     logger.error("检查响应完成时出错: {}", e.getMessage(), e);
                     if (responseFuture.completeExceptionally(e)) {
-                        chatGenerationStateService.markFailed(generationId, e.getMessage());
+                        markFailedGeneration(generationId, e.getMessage());
                         cleanupGenerationState(generationId, e);
                     }
                 }
@@ -443,7 +478,7 @@ public class ChatHandler {
             logger.warn("聊天监控线程池已满，generationId: {}", generationId);
             RuntimeException busyException = new RuntimeException("系统繁忙，请稍后重试");
             handleError(userId, generationId, busyException);
-            chatGenerationStateService.markFailed(generationId, busyException.getMessage());
+            markFailedGeneration(generationId, busyException.getMessage());
             cleanupGenerationState(generationId, ex);
         }
     }
@@ -463,7 +498,7 @@ public class ChatHandler {
             if (responseFuture.completeExceptionally(exception)) {
                 handleError(userId, generationId, exception);
                 sendCompletionNotification(userId, generationId, conversationId, true, false);
-                chatGenerationStateService.markFailed(generationId, exception.getMessage());
+                markFailedGeneration(generationId, exception.getMessage());
                 cleanupGenerationState(generationId, exception);
             }
             return;
@@ -474,7 +509,7 @@ public class ChatHandler {
             if (responseFuture.completeExceptionally(exception)) {
                 handleError(userId, generationId, exception);
                 sendCompletionNotification(userId, generationId, conversationId, true, false);
-                chatGenerationStateService.markFailed(generationId, exception.getMessage());
+                markFailedGeneration(generationId, exception.getMessage());
                 cleanupGenerationState(generationId, exception);
             }
             return;
@@ -482,6 +517,10 @@ public class ChatHandler {
         if (!responseFuture.complete(completeResponse)) {
             return;
         }
+        sendAgentStep(userId, generationId, conversationId,
+                "finalize", "finalizing", "completed", "整理答案与引用",
+                "回答已完成，共 " + completeResponse.length() + " 个字符",
+                null);
         logger.info("模型回答收尾: generationId={}, conversationId={}, answerChars={}, finishReason={}, promptTokens={}, completionTokens={}",
                 generationId,
                 conversationId,
@@ -500,6 +539,12 @@ public class ChatHandler {
                     generationId, conversationId);
         }
         chatGenerationStateService.markCompleted(generationId, toSerializableReferenceMappings(referenceMappings));
+        agentRunService.complete(
+                generationId,
+                completeResponse,
+                completion != null ? completion.promptTokens() : 0,
+                completion != null ? completion.completionTokens() : 0
+        );
         sendCompletionNotification(userId, generationId, conversationId, false, !persisted);
         logger.info("对话存储信息 - Redis键: {}, 值: {}", "user:" + userId + ":current_conversation", conversationId);
         cleanupGenerationState(generationId, null);
@@ -790,6 +835,112 @@ public class ChatHandler {
         payload.put("conversationId", conversationId);
         payload.put("timestamp", System.currentTimeMillis());
         chatSessionRegistry.sendJsonToUser(userId, payload);
+
+        String stepStatus = switch (status) {
+            case "success" -> "completed";
+            case "failed" -> "failed";
+            default -> "running";
+        };
+        sendAgentStep(
+                userId,
+                generationId,
+                conversationId,
+                "tool-" + (toolCall.id() == null || toolCall.id().isBlank() ? toolCall.name() : toolCall.id()),
+                toolStage(toolCall.name()),
+                stepStatus,
+                toolTitle(toolCall.name()),
+                toolDetail(toolCall.name(), stepStatus),
+                toolCall.name()
+        );
+    }
+
+    private void sendAgentStep(String userId,
+                               String generationId,
+                               String conversationId,
+                               String stepId,
+                               String stage,
+                               String status,
+                               String title,
+                               String detail,
+                               String toolName) {
+        if (generationId == null || generationId.isBlank()) {
+            return;
+        }
+        long timestamp = System.currentTimeMillis();
+        ChatGenerationStateService.AgentEventSnapshot event = new ChatGenerationStateService.AgentEventSnapshot(
+                stepId, stage, status, title, detail, toolName, timestamp);
+        chatGenerationStateService.appendAgentEvent(generationId, event);
+        agentRunService.appendStep(
+                generationId,
+                stepId,
+                stage,
+                status,
+                title,
+                detail,
+                toolName,
+                Map.of()
+        );
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", "agent_step");
+        payload.put("generationId", generationId);
+        payload.put("conversationId", conversationId);
+        payload.put("stepId", stepId);
+        payload.put("stage", stage);
+        payload.put("status", status);
+        payload.put("title", title);
+        payload.put("detail", detail);
+        payload.put("timestamp", timestamp);
+        if (toolName != null && !toolName.isBlank()) {
+            payload.put("toolName", toolName);
+        }
+        chatSessionRegistry.sendJsonToUser(userId, payload);
+    }
+
+    private String toolStage(String toolName) {
+        return switch (toolName) {
+            case "search_knowledge" -> "retrieval";
+            case "generate_summary" -> "synthesis";
+            case "submit_feedback" -> "memory";
+            case "knowledge_stats" -> "inspection";
+            default -> "tool";
+        };
+    }
+
+    private String toolTitle(String toolName) {
+        return switch (toolName) {
+            case "search_knowledge" -> "检索企业知识库";
+            case "generate_summary" -> "生成知识摘要";
+            case "submit_feedback" -> "记录回答反馈";
+            case "knowledge_stats" -> "读取知识库状态";
+            default -> "执行工具 · " + toolName;
+        };
+    }
+
+    private String toolDetail(String toolName, String status) {
+        if ("failed".equals(status)) {
+            return "工具执行失败，Agent 将根据错误决定后续动作";
+        }
+        if ("completed".equals(status)) {
+            return switch (toolName) {
+                case "search_knowledge" -> "已返回带权限过滤的相关证据";
+                case "generate_summary" -> "已完成知识材料整理";
+                default -> "工具执行完成";
+            };
+        }
+        return switch (toolName) {
+            case "search_knowledge" -> "正在进行向量与关键词双路召回";
+            case "generate_summary" -> "正在综合检索证据生成摘要";
+            default -> "正在安全执行工具";
+        };
+    }
+
+    private String safeErrorMessage(Throwable error) {
+        if (error == null || error.getMessage() == null || error.getMessage().isBlank()) {
+            return "Agent 执行失败";
+        }
+        String message = error.getMessage().trim();
+        return message.length() <= 160 ? message : message.substring(0, 160) + "...";
     }
 
     private void sendCompletionNotification(String userId,
@@ -827,6 +978,11 @@ public class ChatHandler {
         chatSessionRegistry.sendJsonToUser(userId, errorResponse);
     }
 
+    private void markFailedGeneration(String generationId, String errorMessage) {
+        chatGenerationStateService.markFailed(generationId, errorMessage);
+        agentRunService.fail(generationId, errorMessage);
+    }
+
     private void sendRateLimitMessage(String userId, String generationId, RateLimitExceededException exception) {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", "error");
@@ -859,7 +1015,11 @@ public class ChatHandler {
         // 设置停止标志
         cancelledGenerations.add(targetGenerationId);
         stopFlags.put(targetGenerationId, true);
+        sendAgentStep(userId, targetGenerationId, null,
+                "agent-run", "orchestration", "cancelled", "已停止 Agent",
+                "你已主动停止本次任务", null);
         chatGenerationStateService.markCancelled(targetGenerationId);
+        agentRunService.cancel(targetGenerationId);
         LlmProviderRouter.StreamHandle streamHandle = activeStreams.get(targetGenerationId);
         if (streamHandle != null) {
             streamHandle.cancel();
