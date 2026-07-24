@@ -7,4 +7,9 @@ import java.util.Optional;
 
 public interface AgentCheckpointRepository extends JpaRepository<AgentCheckpoint, Long> {
     Optional<AgentCheckpoint> findTopByGenerationIdOrderByIdDesc(String generationId);
+
+    Optional<AgentCheckpoint> findTopByGenerationIdAndCheckpointTypeStartingWithOrderByIdDesc(
+            String generationId,
+            String checkpointTypePrefix
+    );
 }

@@ -50,7 +50,7 @@ public class AgentRunService {
 
     @Transactional
     public void start(String generationId, String userId, String conversationId, String question) {
-        startInternal(generationId, userId, conversationId, question, null, 1);
+        startInternal(generationId, userId, conversationId, question, null, 1, null);
     }
 
     @Transactional
@@ -61,7 +61,8 @@ public class AgentRunService {
                 source.conversationId(),
                 source.question(),
                 source.generationId(),
-                source.attemptNumber() + 1
+                source.attemptNumber() + 1,
+                source.latestCheckpointId()
         );
     }
 
@@ -87,7 +88,11 @@ public class AgentRunService {
         runRepository.save(source);
 
         int nextAttempt = (source.getAttemptNumber() == null ? 1 : source.getAttemptNumber()) + 1;
-        startInternal(generationId, userId, conversationId, mergedQuestion, sourceGenerationId, nextAttempt);
+        Long resumedCheckpointId = checkpointRepository.findTopByGenerationIdOrderByIdDesc(sourceGenerationId)
+                .map(AgentCheckpoint::getId)
+                .orElse(null);
+        startInternal(generationId, userId, conversationId, mergedQuestion,
+                sourceGenerationId, nextAttempt, resumedCheckpointId);
         checkpoint(generationId, "CLARIFICATION_RESUMED", Map.of(
                 "sourceGenerationId", sourceGenerationId,
                 "pendingTaskId", pendingTaskId,
@@ -121,7 +126,8 @@ public class AgentRunService {
                                String conversationId,
                                String question,
                                String retryOfGenerationId,
-                               int attemptNumber) {
+                               int attemptNumber,
+                               Long resumedFromCheckpointId) {
         if (runRepository.existsById(generationId)) {
             return;
         }
@@ -134,6 +140,7 @@ public class AgentRunService {
         run.setStatus("RUNNING");
         run.setCurrentStage("intake");
         run.setRetryOfGenerationId(retryOfGenerationId);
+        run.setResumedFromCheckpointId(resumedFromCheckpointId);
         run.setAttemptNumber(attemptNumber);
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
@@ -143,6 +150,9 @@ public class AgentRunService {
         initialState.put("attemptNumber", attemptNumber);
         if (retryOfGenerationId != null) {
             initialState.put("retryOfGenerationId", retryOfGenerationId);
+        }
+        if (resumedFromCheckpointId != null) {
+            initialState.put("resumedFromCheckpointId", resumedFromCheckpointId);
         }
         checkpoint(generationId, retryOfGenerationId == null ? "RUN_STARTED" : "RUN_RETRIED", initialState);
     }
@@ -229,13 +239,26 @@ public class AgentRunService {
             throw new IllegalArgumentException("只有失败、中断或取消的 Agent 运行可以重试");
         }
         int attempt = run.getAttemptNumber() == null ? 1 : run.getAttemptNumber();
+        AgentCheckpoint latest = checkpointRepository.findTopByGenerationIdOrderByIdDesc(generationId).orElse(null);
+        Map<String, Object> checkpointState = latest == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(readMetadata(latest.getStateJson()));
+        checkpointRepository.findTopByGenerationIdAndCheckpointTypeStartingWithOrderByIdDesc(
+                        generationId, "TASK_LEDGER")
+                .map(AgentCheckpoint::getStateJson)
+                .map(this::readMetadata)
+                .map(state -> state.get("taskLedger"))
+                .ifPresent(ledger -> checkpointState.put("taskLedger", ledger));
         return new RetryCandidate(
                 run.getGenerationId(),
                 run.getUserId(),
                 run.getConversationId(),
                 run.getQuestion(),
                 run.getCurrentStage(),
-                attempt
+                attempt,
+                latest == null ? null : latest.getId(),
+                latest == null ? null : latest.getCheckpointType(),
+                checkpointState
         );
     }
 
@@ -508,7 +531,10 @@ public class AgentRunService {
                                  String conversationId,
                                  String question,
                                  String lastStage,
-                                 int attemptNumber) {
+                                 int attemptNumber,
+                                 Long latestCheckpointId,
+                                 String checkpointType,
+                                 Map<String, Object> checkpointState) {
     }
 
 

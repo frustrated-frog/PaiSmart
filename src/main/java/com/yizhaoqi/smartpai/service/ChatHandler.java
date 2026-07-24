@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
 import com.yizhaoqi.smartpai.model.AgentPendingTask;
+import com.yizhaoqi.smartpai.model.AgentToolCall;
 import com.yizhaoqi.smartpai.model.AgentTerminalReason;
 import com.yizhaoqi.smartpai.rag.QueryPlanningService;
 import com.yizhaoqi.smartpai.rag.model.EvidenceAssessment;
@@ -67,6 +68,7 @@ public class ChatHandler {
     private final QueryPlanningService queryPlanningService;
     private final AgentLoopGuard agentLoopGuard;
     private final AgentTaskLedgerService taskLedgerService;
+    private final AgentToolLedgerService toolLedgerService;
     private final AgentMemoryService agentMemoryService;
     private final AgentContextBudgetService contextBudgetService;
     private final AgentErrorSanitizer errorSanitizer;
@@ -88,6 +90,8 @@ public class ChatHandler {
     // 执行查询可能包含合并后的澄清上下文；会话历史仍只保存用户本轮真实输入。
     private final Map<String, String> generationPersistedUserMessages = new ConcurrentHashMap<>();
     private final Map<String, AgentTerminalReason> generationTerminalReasons = new ConcurrentHashMap<>();
+    // 新运行指向直接父运行；工具账本会沿此谱系回放已完成动作。
+    private final Map<String, String> generationReplaySources = new ConcurrentHashMap<>();
 
     public ChatHandler(RedisTemplate<String, String> redisTemplate,
                       HybridSearchService searchService,
@@ -102,6 +106,7 @@ public class ChatHandler {
                       QueryPlanningService queryPlanningService,
                       AgentLoopGuard agentLoopGuard,
                       AgentTaskLedgerService taskLedgerService,
+                      AgentToolLedgerService toolLedgerService,
                       AgentMemoryService agentMemoryService,
                       AgentContextBudgetService contextBudgetService,
                       AgentErrorSanitizer errorSanitizer,
@@ -120,6 +125,7 @@ public class ChatHandler {
         this.queryPlanningService = queryPlanningService;
         this.agentLoopGuard = agentLoopGuard;
         this.taskLedgerService = taskLedgerService;
+        this.toolLedgerService = toolLedgerService;
         this.agentMemoryService = agentMemoryService;
         this.contextBudgetService = contextBudgetService;
         this.errorSanitizer = errorSanitizer;
@@ -199,6 +205,7 @@ public class ChatHandler {
         );
         agentRunService.startRetry(generation.generationId(), source);
         generationPersistedUserMessages.put(generation.generationId(), source.question());
+        generationReplaySources.put(generation.generationId(), source.generationId());
         QueryPlan queryPlan = queryPlanningService.plan(source.question(), userId);
         launchGeneration(userId, source.question(), source.conversationId(), generation.generationId(), queryPlan, source, null);
         return new RetryLaunch(
@@ -217,11 +224,24 @@ public class ChatHandler {
                                   AgentRunService.RetryCandidate retrySource,
                                   AgentPendingTaskService.ResolvedClarification clarificationSource) {
         sendGenerationStart(userId, generationId, conversationId);
-        taskLedgerService.initialize(generationId, queryPlan).ifPresent(ledger -> {
-            agentRunService.checkpointState(generationId, "TASK_LEDGER_CREATED", Map.of("taskLedger", ledger));
+        if (clarificationSource != null) {
+            generationReplaySources.put(generationId, clarificationSource.sourceGenerationId());
+        }
+        var restoredLedger = retrySource == null || retrySource.checkpointState() == null
+                ? java.util.Optional.<com.yizhaoqi.smartpai.model.AgentTaskLedger>empty()
+                : taskLedgerService.restore(generationId, retrySource.checkpointState().get("taskLedger"));
+        var activeLedger = restoredLedger.isPresent()
+                ? restoredLedger
+                : taskLedgerService.initialize(generationId, queryPlan);
+        activeLedger.ifPresent(ledger -> {
+            String ledgerCheckpoint = restoredLedger.isPresent() ? "TASK_LEDGER_RESTORED" : "TASK_LEDGER_CREATED";
+            agentRunService.checkpointState(generationId, ledgerCheckpoint, Map.of("taskLedger", ledger));
             sendAgentStep(userId, generationId, conversationId,
-                    "task-ledger", "planning", "completed", "已创建可恢复任务账本",
-                    "已拆解目标、验收条件和下一步动作；每轮工具执行后都会更新进度",
+                    "task-ledger", "planning", "completed",
+                    restoredLedger.isPresent() ? "已恢复任务进度账本" : "已创建可恢复任务账本",
+                    restoredLedger.isPresent()
+                            ? "已恢复完成项、阻塞项和下一步动作，不会重复已经完成的步骤"
+                            : "已拆解目标、验收条件和下一步动作；每轮工具执行后都会更新进度",
                     null,
                     Map.of("taskLedger", ledger));
         });
@@ -233,7 +253,9 @@ public class ChatHandler {
                     Map.of(
                             "retryOfGenerationId", retrySource.generationId(),
                             "lastStage", retrySource.lastStage() == null ? "unknown" : retrySource.lastStage(),
-                            "attemptNumber", retrySource.attemptNumber() + 1
+                            "attemptNumber", retrySource.attemptNumber() + 1,
+                            "resumedFromCheckpointId", retrySource.latestCheckpointId() == null ? -1L : retrySource.latestCheckpointId(),
+                            "checkpointType", retrySource.checkpointType() == null ? "unknown" : retrySource.checkpointType()
                     ));
         }
         if (clarificationSource != null) {
@@ -499,6 +521,53 @@ public class ChatHandler {
             sendLoopGuardStep(userId, generationId, conversationId, toolCall, actionDecision);
         }
         AtomicBoolean summaryStreamStarted = new AtomicBoolean(false);
+        AgentToolRegistry.ToolPolicy toolPolicy = agentToolRegistry.getTool(toolCall.name())
+                .map(AgentToolRegistry.AgentTool::policy)
+                .orElseThrow(() -> new IllegalArgumentException("工具未注册执行策略: " + toolCall.name()));
+        AgentToolLedgerService.PreparedToolCall prepared = toolLedgerService.prepare(
+                generationId,
+                generationReplaySources.get(generationId),
+                toolCall.id(),
+                toolCall.name(),
+                actionDecision.fingerprint(),
+                toolCall.arguments(),
+                toolPolicy
+        );
+        if (prepared.disposition() == AgentToolLedgerService.Disposition.BLOCK) {
+            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed", Map.of(
+                    "replayPolicy", toolPolicy.replayPolicy().name(),
+                    "terminalReason", AgentTerminalReason.WAITING_APPROVAL.name(),
+                    "ledgerMessage", prepared.message()
+            ));
+            return new ExecutedToolResult(
+                    prepared.message() + "。不要重复调用该工具，请向用户说明需要确认。",
+                    false,
+                    AgentTerminalReason.WAITING_APPROVAL
+            );
+        }
+        if (prepared.disposition() == AgentToolLedgerService.Disposition.REUSE) {
+            AgentToolRegistry.ToolExecutionResult replayed = prepared.replayedResult();
+            if ("search_knowledge".equals(toolCall.name())) {
+                replaceReferencesFromSearchTool(generationId, userMessage, replayed);
+            }
+            taskLedgerService.observeToolResult(generationId, toolCall.name(), replayed.data())
+                    .ifPresent(ledger -> agentRunService.checkpointState(
+                            generationId, "TASK_LEDGER_REPLAYED",
+                            Map.of("toolCallId", safeToolCallId(toolCall), "toolName", toolCall.name(), "taskLedger", ledger)
+                    ));
+            Map<String, Object> replayMetadata = new LinkedHashMap<>(toolMetadata(replayed));
+            replayMetadata.put("replayed", true);
+            replayMetadata.put("replayMessage", prepared.message());
+            replayMetadata.put("reusedFromToolCallId",
+                    prepared.ticket().getReusedFromToolCallId() == null ? prepared.ticket().getId() : prepared.ticket().getReusedFromToolCallId());
+            sendToolCallStatus(userId, generationId, conversationId, toolCall, "success", replayMetadata);
+            return new ExecutedToolResult(
+                    "[工具结果安全回放] " + prepared.message() + "\n\n" + replayed.content(),
+                    false,
+                    evidenceTerminalReason(replayed)
+            );
+        }
+        AgentToolCall toolTicket = prepared.ticket();
         try {
             logger.info("ReAct 执行 Agent Tool: name={}, userId={}, generationId={}, toolCallId={}, argumentKeys={}",
                     toolCall.name(), userId, generationId, toolCall.id(), toolCall.arguments().keySet());
@@ -515,12 +584,13 @@ public class ChatHandler {
                     : null;
             AgentToolRegistry.ToolExecutionResult toolResult =
                     agentToolRegistry.executeTool(toolCall.name(), toolCall.arguments(), userId, toolChunkConsumer);
+            toolLedgerService.complete(toolTicket, toolResult);
 
             taskLedgerService.observeToolResult(generationId, toolCall.name(), toolResult.data())
                     .ifPresent(ledger -> agentRunService.checkpointState(
                             generationId,
                             "TASK_LEDGER_UPDATED",
-                            Map.of("toolCallId", toolCall.id(), "toolName", toolCall.name(), "taskLedger", ledger)
+                            Map.of("toolCallId", safeToolCallId(toolCall), "toolName", toolCall.name(), "taskLedger", ledger)
                     ));
 
             // search_knowledge 返回的 SearchResult 列表与模型 prompt 中的 [N] 编号一一对应，
@@ -548,6 +618,7 @@ public class ChatHandler {
             sendToolCallStatus(userId, generationId, conversationId, toolCall, "success", toolMetadata(toolResult));
             return new ExecutedToolResult(content, toolResult.streamedToUser(), terminalReason);
         } catch (Exception exception) {
+            toolLedgerService.fail(toolTicket, exception);
             logger.warn("ReAct Agent Tool 执行失败，作为 tool message 返回模型: name={}, generationId={}",
                     toolCall.name(), generationId, exception);
             sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
@@ -689,6 +760,10 @@ public class ChatHandler {
             boolean streamedToUser,
             AgentTerminalReason terminalReason
     ) {
+    }
+
+    private String safeToolCallId(LlmProviderRouter.ToolCallDecision toolCall) {
+        return toolCall.id() == null ? "" : toolCall.id();
     }
 
     private Map<String, Object> toolMessage(String toolCallId, String content) {
@@ -908,6 +983,7 @@ public class ChatHandler {
         generationTerminalReasons.remove(generationId);
         agentLoopGuard.clear(generationId);
         taskLedgerService.clear(generationId);
+        generationReplaySources.remove(generationId);
         stopFlags.remove(generationId);
         activeStreams.remove(generationId);
         cancelledGenerations.remove(generationId);

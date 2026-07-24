@@ -2,6 +2,7 @@ package com.yizhaoqi.smartpai.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.model.AgentRun;
+import com.yizhaoqi.smartpai.model.AgentCheckpoint;
 import com.yizhaoqi.smartpai.model.AgentStep;
 import com.yizhaoqi.smartpai.model.AgentTerminalReason;
 import com.yizhaoqi.smartpai.repository.AgentCheckpointRepository;
@@ -16,6 +17,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Optional;
 import java.util.List;
+import java.util.Map;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,7 +52,8 @@ class AgentRunServiceTest {
     @Test
     void shouldCreateRetryWithIndependentRunLineage() {
         AgentRunService.RetryCandidate source = new AgentRunService.RetryCandidate(
-                "source-run", "7", "conversation-1", "原问题", "retrieval", 2
+                "source-run", "7", "conversation-1", "原问题", "retrieval", 2,
+                42L, "TASK_LEDGER_UPDATED", Map.of("taskLedger", Map.of("goal", "原问题"))
         );
         when(runRepository.existsById("retry-run")).thenReturn(false);
 
@@ -62,8 +65,28 @@ class AgentRunServiceTest {
         assertThat(retry.getGenerationId()).isEqualTo("retry-run");
         assertThat(retry.getRetryOfGenerationId()).isEqualTo("source-run");
         assertThat(retry.getAttemptNumber()).isEqualTo(3);
+        assertThat(retry.getResumedFromCheckpointId()).isEqualTo(42L);
         assertThat(retry.getStatus()).isEqualTo("RUNNING");
         verify(checkpointRepository).save(any());
+    }
+
+    @Test
+    void shouldExposeLatestCheckpointAndTaskLedgerForRetry() {
+        AgentRun failed = run("run-checkpoint", "7", "FAILED");
+        AgentCheckpoint latest = checkpoint(9L, "run-checkpoint", "RUN_FAILED", "{\"status\":\"FAILED\"}");
+        AgentCheckpoint ledger = checkpoint(7L, "run-checkpoint", "TASK_LEDGER_UPDATED",
+                "{\"taskLedger\":{\"goal\":\"比较检索方案\"}}");
+        when(runRepository.findById("run-checkpoint")).thenReturn(Optional.of(failed));
+        when(checkpointRepository.findTopByGenerationIdOrderByIdDesc("run-checkpoint"))
+                .thenReturn(Optional.of(latest));
+        when(checkpointRepository.findTopByGenerationIdAndCheckpointTypeStartingWithOrderByIdDesc(
+                "run-checkpoint", "TASK_LEDGER")).thenReturn(Optional.of(ledger));
+
+        AgentRunService.RetryCandidate candidate = service.getRetryCandidate("run-checkpoint", "7");
+
+        assertThat(candidate.latestCheckpointId()).isEqualTo(9L);
+        assertThat(candidate.checkpointType()).isEqualTo("RUN_FAILED");
+        assertThat(candidate.checkpointState()).containsKey("taskLedger");
     }
 
     @Test
@@ -189,5 +212,15 @@ class AgentRunServiceTest {
         run.setStatus(status);
         run.setAttemptNumber(1);
         return run;
+    }
+
+    private AgentCheckpoint checkpoint(Long id, String generationId, String type, String stateJson) {
+        AgentCheckpoint checkpoint = new AgentCheckpoint();
+        checkpoint.setId(id);
+        checkpoint.setGenerationId(generationId);
+        checkpoint.setCheckpointType(type);
+        checkpoint.setStateJson(stateJson);
+        checkpoint.setCreatedAt(LocalDateTime.now());
+        return checkpoint;
     }
 }

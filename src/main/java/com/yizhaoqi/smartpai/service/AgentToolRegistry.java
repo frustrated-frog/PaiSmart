@@ -100,12 +100,10 @@ public class AgentToolRegistry {
     }
 
     private AgentToolExecutionGuard.RiskLevel riskLevel(String name) {
-        return switch (name) {
-            case "search_knowledge", "knowledge_stats" -> AgentToolExecutionGuard.RiskLevel.READ_ONLY;
-            case "generate_summary" -> AgentToolExecutionGuard.RiskLevel.GENERATIVE;
-            case "submit_feedback" -> AgentToolExecutionGuard.RiskLevel.WRITE_USER_SCOPE;
-            default -> throw new IllegalArgumentException("工具未声明风险等级: " + name);
-        };
+        return getTool(name)
+                .map(AgentTool::policy)
+                .map(ToolPolicy::riskLevel)
+                .orElseThrow(() -> new IllegalArgumentException("工具未声明风险等级: " + name));
     }
 
     private ToolExecutionResult executeSearchKnowledge(Map<String, Object> arguments,
@@ -227,7 +225,9 @@ public class AgentToolRegistry {
                 objectSchema(Map.of(
                         "query", stringSchema("用于知识库检索的查询语句。应保留用户原话中的核心实体、缩写和限定词，可包含原始问句和必要的等价改写；不要替换成固定关键词。"),
                         "topK", integerSchema("返回的片段数量，默认 5。")
-                ), List.of("query"))
+                ), List.of("query")),
+                new ToolPolicy(AgentToolExecutionGuard.RiskLevel.READ_ONLY,
+                        ToolEffect.READ, ConcurrencyPolicy.PARALLEL_SAFE, ReplayPolicy.REPLAY_SAFE)
         );
     }
 
@@ -238,7 +238,9 @@ public class AgentToolRegistry {
                 objectSchema(Map.of(
                         "topic", stringSchema("需要从知识库中整理和总结的主题。"),
                         "maxDocs", integerSchema("用于生成摘要的最多相关片段数量，默认 5。")
-                ), List.of("topic"))
+                ), List.of("topic")),
+                new ToolPolicy(AgentToolExecutionGuard.RiskLevel.GENERATIVE,
+                        ToolEffect.GENERATE, ConcurrencyPolicy.SERIAL_PER_RUN, ReplayPolicy.REPLAY_SAFE)
         );
     }
 
@@ -254,7 +256,9 @@ public class AgentToolRegistry {
                         "query", stringSchema("这条反馈所针对的原始问题或主题，可为空。"),
                         "correction", stringSchema("用户明确给出的正确事实或期望做法；只有用户明确纠错时填写。"),
                         "sourceReference", stringSchema("关联消息或运行 ID，可为空。")
-                ), List.of("rating"))
+                ), List.of("rating")),
+                new ToolPolicy(AgentToolExecutionGuard.RiskLevel.WRITE_USER_SCOPE,
+                        ToolEffect.WRITE, ConcurrencyPolicy.SERIAL_PER_USER, ReplayPolicy.AT_MOST_ONCE)
         );
     }
 
@@ -262,7 +266,9 @@ public class AgentToolRegistry {
         return new AgentTool(
                 "knowledge_stats",
                 "返回当前知识库的统计信息，包括 MySQL 文档总数、Elasticsearch 片段总数、索引存储量和最近更新时间。仅当用户询问知识库规模、文档数量、片段数量、更新时间或索引状态时调用。",
-                objectSchema(Collections.emptyMap(), Collections.emptyList())
+                objectSchema(Collections.emptyMap(), Collections.emptyList()),
+                new ToolPolicy(AgentToolExecutionGuard.RiskLevel.READ_ONLY,
+                        ToolEffect.READ, ConcurrencyPolicy.PARALLEL_SAFE, ReplayPolicy.REPLAY_SAFE)
         );
     }
 
@@ -403,8 +409,33 @@ public class AgentToolRegistry {
     public record AgentTool(
             String name,
             String description,
-            Map<String, Object> parameters
+            Map<String, Object> parameters,
+            ToolPolicy policy
     ) {
+    }
+
+    public record ToolPolicy(AgentToolExecutionGuard.RiskLevel riskLevel,
+                             ToolEffect effect,
+                             ConcurrencyPolicy concurrencyPolicy,
+                             ReplayPolicy replayPolicy) {
+    }
+
+    public enum ToolEffect {
+        READ,
+        GENERATE,
+        WRITE
+    }
+
+    public enum ConcurrencyPolicy {
+        PARALLEL_SAFE,
+        SERIAL_PER_RUN,
+        SERIAL_PER_USER
+    }
+
+    public enum ReplayPolicy {
+        REPLAY_SAFE,
+        AT_MOST_ONCE,
+        REQUIRES_APPROVAL
     }
 
     public record ToolExecutionResult(

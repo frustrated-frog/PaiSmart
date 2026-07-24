@@ -46,6 +46,9 @@ public class AgentRun {
     @Column(name = "retry_of_generation_id", length = 64)
     private String retryOfGenerationId;
 
+    @Column(name = "resumed_from_checkpoint_id")
+    private Long resumedFromCheckpointId;
+
     @Column(name = "attempt_number", nullable = false)
     private Integer attemptNumber = 1;
 
