@@ -1,0 +1,3 @@
+{"id":"architecture-overview","query":"知枢的整体技术架构是什么？","relevantDocumentIds":["REPLACE_WITH_FILE_MD5:0"],"topK":8,"note":"将占位 ID 替换为入库文档的 fileMd5:chunkId 后用于回归评测"}
+{"id":"agent-memory","query":"Agent 长期记忆如何治理和纠错？","relevantDocumentIds":["REPLACE_WITH_FILE_MD5:1"],"topK":8,"note":"每条问题至少人工标注一个相关 child chunk"}
+{"id":"hybrid-retrieval","query":"BM25 与向量召回结果如何融合？","relevantDocumentIds":["REPLACE_WITH_FILE_MD5:2"],"topK":8,"note":"评测接口输出 Recall@K、MRR、nDCG、零召回率和 P95 延迟"}

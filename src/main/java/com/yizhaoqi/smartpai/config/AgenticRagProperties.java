@@ -13,6 +13,7 @@ public class AgenticRagProperties {
     private QueryPlanning queryPlanning = new QueryPlanning();
     private Retrieval retrieval = new Retrieval();
     private Reranker reranker = new Reranker();
+    private Evaluation evaluation = new Evaluation();
 
     @Data
     public static class QueryPlanning {
@@ -38,5 +39,14 @@ public class AgenticRagProperties {
         private String model = "bge-reranker-v2-m3";
         private int timeoutSeconds = 12;
         private int maxDocuments = 40;
+    }
+
+    @Data
+    public static class Evaluation {
+        private double minRecallAtK = 0.75d;
+        private double minMrr = 0.60d;
+        private double minNdcgAtK = 0.65d;
+        private double maxZeroRecallRate = 0.15d;
+        private long maxP95LatencyMs = 3000L;
     }
 }

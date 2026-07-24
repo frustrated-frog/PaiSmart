@@ -318,7 +318,11 @@ public class ChatGenerationStateService {
             String title,
             String detail,
             String toolName,
-            long timestamp
+            long timestamp,
+            Map<String, Object> metadata
     ) {
+        public AgentEventSnapshot {
+            metadata = metadata == null ? Collections.emptyMap() : Map.copyOf(metadata);
+        }
     }
 }

@@ -432,6 +432,27 @@ declare namespace Api {
       detail?: string;
       toolName?: string;
       timestamp: number;
+      metadata?: {
+        retrievalTrace?: {
+          traceId: string;
+          queryPlan: {
+            intent: string;
+            complexity: string;
+            planner: string;
+            variants: Array<{ type: string; query: string; purpose?: string }>;
+          };
+          stages: Array<{
+            name: string;
+            status: string;
+            latencyMs: number;
+            inputCount: number;
+            outputCount: number;
+            details?: Record<string, unknown>;
+          }>;
+          degradations: string[];
+          totalLatencyMs: number;
+        };
+      };
     }
 
     interface Conversation {

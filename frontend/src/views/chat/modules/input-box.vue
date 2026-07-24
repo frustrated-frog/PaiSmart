@@ -292,7 +292,8 @@ function handleAgentStepPayload(assistant: Api.Chat.Message, payload: Record<str
     title,
     detail: typeof payload.detail === 'string' ? payload.detail : undefined,
     toolName: typeof payload.toolName === 'string' ? payload.toolName : undefined,
-    timestamp: Number(payload.timestamp || Date.now())
+    timestamp: Number(payload.timestamp || Date.now()),
+    metadata: payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : undefined
   };
 
   assistant.agentEvents ||= [];

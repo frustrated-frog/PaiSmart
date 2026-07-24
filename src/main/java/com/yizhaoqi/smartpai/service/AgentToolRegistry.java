@@ -35,6 +35,7 @@ public class AgentToolRegistry {
     private final StringRedisTemplate stringRedisTemplate;
     private final ElasticsearchClient elasticsearchClient;
     private final FileUploadRepository fileUploadRepository;
+    private final AgentMemoryService agentMemoryService;
     private final List<AgentTool> tools;
     private final Map<String, ToolHandler> handlers;
 
@@ -42,12 +43,14 @@ public class AgentToolRegistry {
                              DeepSeekClient deepSeekClient,
                              StringRedisTemplate stringRedisTemplate,
                              ElasticsearchClient elasticsearchClient,
-                             FileUploadRepository fileUploadRepository) {
+                             FileUploadRepository fileUploadRepository,
+                             AgentMemoryService agentMemoryService) {
         this.agenticRetrievalService = agenticRetrievalService;
         this.deepSeekClient = deepSeekClient;
         this.stringRedisTemplate = stringRedisTemplate;
         this.elasticsearchClient = elasticsearchClient;
         this.fileUploadRepository = fileUploadRepository;
+        this.agentMemoryService = agentMemoryService;
         this.tools = List.of(
                 searchKnowledgeTool(),
                 generateSummaryTool(),
@@ -136,18 +139,32 @@ public class AgentToolRegistry {
             throw new IllegalArgumentException("rating 只允许 good 或 bad");
         }
         String reason = getOptionalString(arguments, "reason");
+        String query = getOptionalString(arguments, "query");
+        String correction = getOptionalString(arguments, "correction");
+        String sourceReference = getOptionalString(arguments, "sourceReference");
         String key = "feedback:" + userId;
         String field = String.valueOf(System.currentTimeMillis());
         String value = reason == null || reason.isBlank()
                 ? "rating=" + rating
                 : "rating=" + rating + "; reason=" + reason;
         stringRedisTemplate.opsForHash().put(key, field, value);
+        var memory = agentMemoryService.recordFeedback(
+                userId,
+                rating,
+                reason,
+                query,
+                correction,
+                sourceReference == null ? field : sourceReference
+        );
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("key", key);
         data.put("field", field);
         data.put("rating", rating);
         data.put("reason", reason);
+        data.put("memoryId", memory.getId());
+        data.put("memoryType", memory.getMemoryType());
+        data.put("memoryStatus", memory.getStatus());
         return new ToolExecutionResult("submit_feedback", true, "已记录用户反馈: " + value, data);
     }
 
@@ -212,7 +229,10 @@ public class AgentToolRegistry {
                 "当用户明确表达对回答满意、不满意、点赞、点踩、纠错或要求记录反馈时调用，用于记录反馈以优化后续回答质量；不要在没有明确评价意图时推断调用。",
                 objectSchema(Map.of(
                         "rating", ratingSchema,
-                        "reason", stringSchema("用户给出的满意或不满意原因，可为空。")
+                        "reason", stringSchema("用户给出的满意或不满意原因，可为空。"),
+                        "query", stringSchema("这条反馈所针对的原始问题或主题，可为空。"),
+                        "correction", stringSchema("用户明确给出的正确事实或期望做法；只有用户明确纠错时填写。"),
+                        "sourceReference", stringSchema("关联消息或运行 ID，可为空。")
                 ), List.of("rating"))
         );
     }

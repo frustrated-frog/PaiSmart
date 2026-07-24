@@ -49,7 +49,8 @@ async function handleFeedback(message: Api.Chat.Message, rating: 'good' | 'bad')
       rating,
       reason: rating === 'good' ? '用户点击点赞，表示认可本次回答' : '用户点击点踩，表示不满意本次回答',
       conversationId: message.conversationId || props.sessionId,
-      generationId: message.generationId
+      generationId: message.generationId,
+      query: props.retrievalQueryFallback
     }
   });
 
@@ -126,6 +127,22 @@ function getAgentStepDuration(step: Api.Chat.AgentStepEvent & { startedAt: numbe
   const duration = Math.max(0, step.timestamp - step.startedAt);
   if (duration < 1000) return '< 1s';
   return `${(duration / 1000).toFixed(duration < 10_000 ? 1 : 0)}s`;
+}
+
+function getRetrievalTrace(step: Api.Chat.AgentStepEvent) {
+  return step.metadata?.retrievalTrace;
+}
+
+const retrievalStageLabels: Record<string, string> = {
+  QUERY_PLANNING: '意图规划',
+  PARALLEL_RECALL: '并行召回',
+  RRF_FUSION: 'RRF 融合',
+  RERANK: '相关性重排',
+  PARENT_CONTEXT_ASSEMBLY: '父上下文扩展'
+};
+
+function getRetrievalStageLabel(name: string) {
+  return retrievalStageLabels[name] || name;
 }
 
 function getToolLabel(tool: string) {
@@ -459,6 +476,42 @@ async function handleSourceFileClick(fileInfo: {
                 </span>
               </div>
               <div v-if="step.detail" class="agent-step__detail">{{ step.detail }}</div>
+              <div v-if="getRetrievalTrace(step)" class="retrieval-trace">
+                <div class="retrieval-trace__overview">
+                  <span class="retrieval-trace__badge">
+                    {{ getRetrievalTrace(step)?.queryPlan.intent }}
+                  </span>
+                  <span>{{ getRetrievalTrace(step)?.queryPlan.variants.length }} 路查询</span>
+                  <span>{{ getRetrievalTrace(step)?.totalLatencyMs }} ms</span>
+                  <span class="font-mono">{{ getRetrievalTrace(step)?.traceId.slice(0, 8) }}</span>
+                </div>
+                <div class="retrieval-trace__queries">
+                  <span
+                    v-for="variant in getRetrievalTrace(step)?.queryPlan.variants || []"
+                    :key="`${variant.type}-${variant.query}`"
+                    class="retrieval-query"
+                    :title="variant.purpose"
+                  >
+                    <b>{{ variant.type }}</b>{{ variant.query }}
+                  </span>
+                </div>
+                <div class="retrieval-stages">
+                  <div
+                    v-for="stage in getRetrievalTrace(step)?.stages || []"
+                    :key="stage.name"
+                    class="retrieval-stage"
+                  >
+                    <span class="retrieval-stage__dot" :class="{ 'retrieval-stage__dot--degraded': stage.status !== 'SUCCEEDED' }" />
+                    <span class="retrieval-stage__name">{{ getRetrievalStageLabel(stage.name) }}</span>
+                    <span class="retrieval-stage__count">{{ stage.inputCount }} → {{ stage.outputCount }}</span>
+                    <span class="retrieval-stage__latency">{{ stage.latencyMs }} ms</span>
+                  </div>
+                </div>
+                <div v-if="getRetrievalTrace(step)?.degradations.length" class="retrieval-trace__warning">
+                  <icon-material-symbols:warning-outline-rounded />
+                  已启用降级策略：{{ getRetrievalTrace(step)?.degradations.join('；') }}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -706,6 +759,105 @@ async function handleSourceFileClick(fileInfo: {
 .agent-step__content {
   min-width: 0;
   padding-bottom: 13px;
+}
+
+.retrieval-trace {
+  margin-top: 9px;
+  border: 1px solid rgb(var(--primary-color) / 0.13);
+  border-radius: 10px;
+  background: rgb(var(--body-color) / 0.48);
+  padding: 9px 10px;
+}
+
+.retrieval-trace__overview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 10px;
+  color: rgb(var(--text-color-3));
+}
+
+.retrieval-trace__badge {
+  border-radius: 5px;
+  background: rgb(var(--primary-color) / 0.12);
+  padding: 2px 6px;
+  font-weight: 700;
+  color: rgb(var(--primary-color));
+}
+
+.retrieval-trace__queries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.retrieval-query {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 5px;
+  border: 1px solid rgb(var(--border-color) / 0.2);
+  border-radius: 6px;
+  background: rgb(var(--card-color) / 0.65);
+  padding: 3px 7px;
+  font-size: 10px;
+  color: rgb(var(--text-color-2));
+}
+
+.retrieval-query b {
+  color: rgb(var(--primary-color));
+  font-size: 9px;
+}
+
+.retrieval-stages {
+  display: grid;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.retrieval-stage {
+  display: grid;
+  grid-template-columns: 8px minmax(90px, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+}
+
+.retrieval-stage__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #18a058;
+  box-shadow: 0 0 0 3px rgb(24 160 88 / 0.1);
+}
+
+.retrieval-stage__dot--degraded {
+  background: #f0a020;
+  box-shadow: 0 0 0 3px rgb(240 160 32 / 0.1);
+}
+
+.retrieval-stage__name {
+  font-weight: 600;
+  color: rgb(var(--text-color-2));
+}
+
+.retrieval-stage__count,
+.retrieval-stage__latency {
+  color: rgb(var(--text-color-3));
+  font-variant-numeric: tabular-nums;
+}
+
+.retrieval-trace__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin-top: 8px;
+  border-radius: 6px;
+  background: rgb(240 160 32 / 0.09);
+  padding: 6px 7px;
+  font-size: 10px;
+  color: #d48806;
 }
 
 .agent-step:last-child .agent-step__content {

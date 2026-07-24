@@ -57,6 +57,7 @@ public class ChatHandler {
     private final ChatSessionRegistry chatSessionRegistry;
     private final AgentToolRegistry agentToolRegistry;
     private final AgentRunService agentRunService;
+    private final AgentMemoryService agentMemoryService;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
     
@@ -82,6 +83,7 @@ public class ChatHandler {
                       ChatSessionRegistry chatSessionRegistry,
                       AgentToolRegistry agentToolRegistry,
                       AgentRunService agentRunService,
+                      AgentMemoryService agentMemoryService,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
         this.redisTemplate = redisTemplate;
@@ -93,6 +95,7 @@ public class ChatHandler {
         this.chatSessionRegistry = chatSessionRegistry;
         this.agentToolRegistry = agentToolRegistry;
         this.agentRunService = agentRunService;
+        this.agentMemoryService = agentMemoryService;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
     }
@@ -190,7 +193,7 @@ public class ChatHandler {
                 userMessage,
                 "",
                 history,
-                buildRecentFeedbackGuidance(userId)
+                buildRecentFeedbackGuidance(userId, userMessage)
         );
         int executedToolCalls = 0;
         int totalPromptTokens = 0;
@@ -316,7 +319,7 @@ public class ChatHandler {
             if (content == null || content.isBlank()) {
                 content = "工具 " + toolCall.name() + " 执行成功，但没有返回可展示内容。";
             }
-            sendToolCallStatus(userId, generationId, conversationId, toolCall, "success");
+            sendToolCallStatus(userId, generationId, conversationId, toolCall, "success", toolMetadata(toolResult));
             return new ExecutedToolResult(content, toolResult.streamedToUser());
         } catch (Exception exception) {
             logger.warn("ReAct Agent Tool 执行失败，作为 tool message 返回模型: name={}, generationId={}",
@@ -631,11 +634,15 @@ public class ChatHandler {
         return history;
     }
 
-    private String buildRecentFeedbackGuidance(String userId) {
+    private String buildRecentFeedbackGuidance(String userId, String query) {
         if (userId == null || userId.isBlank()) {
             return "";
         }
         try {
+            String governedMemory = agentMemoryService.buildGuidance(userId, query, 5);
+            if (!governedMemory.isBlank()) {
+                return governedMemory;
+            }
             Map<Object, Object> feedbackEntries = redisTemplate.opsForHash().entries("feedback:" + userId);
             if (feedbackEntries == null || feedbackEntries.isEmpty()) {
                 return "";
@@ -826,6 +833,15 @@ public class ChatHandler {
                                     String conversationId,
                                     LlmProviderRouter.ToolCallDecision toolCall,
                                     String status) {
+        sendToolCallStatus(userId, generationId, conversationId, toolCall, status, Map.of());
+    }
+
+    private void sendToolCallStatus(String userId,
+                                    String generationId,
+                                    String conversationId,
+                                    LlmProviderRouter.ToolCallDecision toolCall,
+                                    String status,
+                                    Map<String, Object> metadata) {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", "tool_call");
         payload.put("tool", toolCall.name());
@@ -850,7 +866,8 @@ public class ChatHandler {
                 stepStatus,
                 toolTitle(toolCall.name()),
                 toolDetail(toolCall.name(), stepStatus),
-                toolCall.name()
+                toolCall.name(),
+                metadata
         );
     }
 
@@ -863,12 +880,25 @@ public class ChatHandler {
                                String title,
                                String detail,
                                String toolName) {
+        sendAgentStep(userId, generationId, conversationId, stepId, stage, status, title, detail, toolName, Map.of());
+    }
+
+    private void sendAgentStep(String userId,
+                               String generationId,
+                               String conversationId,
+                               String stepId,
+                               String stage,
+                               String status,
+                               String title,
+                               String detail,
+                               String toolName,
+                               Map<String, Object> metadata) {
         if (generationId == null || generationId.isBlank()) {
             return;
         }
         long timestamp = System.currentTimeMillis();
         ChatGenerationStateService.AgentEventSnapshot event = new ChatGenerationStateService.AgentEventSnapshot(
-                stepId, stage, status, title, detail, toolName, timestamp);
+                stepId, stage, status, title, detail, toolName, timestamp, metadata);
         chatGenerationStateService.appendAgentEvent(generationId, event);
         agentRunService.appendStep(
                 generationId,
@@ -878,7 +908,7 @@ public class ChatHandler {
                 title,
                 detail,
                 toolName,
-                Map.of()
+                metadata
         );
 
         Map<String, Object> payload = new HashMap<>();
@@ -894,7 +924,21 @@ public class ChatHandler {
         if (toolName != null && !toolName.isBlank()) {
             payload.put("toolName", toolName);
         }
+        if (metadata != null && !metadata.isEmpty()) {
+            payload.put("metadata", metadata);
+        }
         chatSessionRegistry.sendJsonToUser(userId, payload);
+    }
+
+    private Map<String, Object> toolMetadata(AgentToolRegistry.ToolExecutionResult result) {
+        if (result == null || result.data() == null) {
+            return Map.of();
+        }
+        Object retrievalTrace = result.data().get("retrievalTrace");
+        if (retrievalTrace == null) {
+            return Map.of();
+        }
+        return Map.of("retrievalTrace", retrievalTrace);
     }
 
     private String toolStage(String toolName) {
