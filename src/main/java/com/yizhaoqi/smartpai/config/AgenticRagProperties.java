@@ -14,6 +14,7 @@ public class AgenticRagProperties {
     private Retrieval retrieval = new Retrieval();
     private Reranker reranker = new Reranker();
     private Evaluation evaluation = new Evaluation();
+    private Tools tools = new Tools();
 
     @Data
     public static class QueryPlanning {
@@ -48,5 +49,13 @@ public class AgenticRagProperties {
         private double minNdcgAtK = 0.65d;
         private double maxZeroRecallRate = 0.15d;
         private long maxP95LatencyMs = 3000L;
+    }
+
+    @Data
+    public static class Tools {
+        private int timeoutSeconds = 90;
+        private int maxConcurrentPerUser = 2;
+        private int circuitFailureThreshold = 3;
+        private int circuitCooldownSeconds = 30;
     }
 }

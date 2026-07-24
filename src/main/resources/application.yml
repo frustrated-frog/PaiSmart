@@ -263,6 +263,11 @@ agentic-rag:
     min-ndcg-at-k: ${AGENTIC_RAG_EVAL_MIN_NDCG_AT_K:0.65}
     max-zero-recall-rate: ${AGENTIC_RAG_EVAL_MAX_ZERO_RECALL_RATE:0.15}
     max-p95-latency-ms: ${AGENTIC_RAG_EVAL_MAX_P95_LATENCY_MS:3000}
+  tools:
+    timeout-seconds: ${AGENT_TOOL_TIMEOUT_SECONDS:90}
+    max-concurrent-per-user: ${AGENT_TOOL_MAX_CONCURRENT_PER_USER:2}
+    circuit-failure-threshold: ${AGENT_TOOL_CIRCUIT_FAILURE_THRESHOLD:3}
+    circuit-cooldown-seconds: ${AGENT_TOOL_CIRCUIT_COOLDOWN_SECONDS:30}
 
 # 微信支付相关配置
 wx:

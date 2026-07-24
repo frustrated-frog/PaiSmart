@@ -11,6 +11,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -118,6 +120,32 @@ public class AgentRunService {
                 stepRepository.findByGenerationIdOrderByIdAsc(generationId),
                 checkpointRepository.findTopByGenerationIdOrderByIdDesc(generationId).orElse(null)
         ));
+    }
+
+    /**
+     * 进程重启后，旧进程中的流式连接和工具 Future 已不可恢复。
+     * 将悬空 RUNNING 运行标为 INTERRUPTED，并保留最新 checkpoint 供前端展示和人工重试。
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void recoverInterruptedRuns() {
+        List<AgentRun> interrupted = runRepository.findByStatusIn(List.of("RUNNING"));
+        if (interrupted.isEmpty()) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        for (AgentRun run : interrupted) {
+            run.setStatus("INTERRUPTED");
+            run.setErrorMessage("服务进程重启，运行已安全中断，可依据 checkpoint 重试");
+            run.setUpdatedAt(now);
+            run.setFinishedAt(now);
+            runRepository.save(run);
+            checkpoint(run.getGenerationId(), "RECOVERY_REQUIRED", Map.of(
+                    "lastStage", run.getCurrentStage() == null ? "unknown" : run.getCurrentStage(),
+                    "reason", "PROCESS_RESTART"
+            ));
+        }
+        logger.warn("已将 {} 个悬空 Agent 运行标记为 INTERRUPTED", interrupted.size());
     }
 
     private void updateTerminal(String generationId,

@@ -36,6 +36,7 @@ public class AgentToolRegistry {
     private final ElasticsearchClient elasticsearchClient;
     private final FileUploadRepository fileUploadRepository;
     private final AgentMemoryService agentMemoryService;
+    private final AgentToolExecutionGuard executionGuard;
     private final List<AgentTool> tools;
     private final Map<String, ToolHandler> handlers;
 
@@ -44,13 +45,15 @@ public class AgentToolRegistry {
                              StringRedisTemplate stringRedisTemplate,
                              ElasticsearchClient elasticsearchClient,
                              FileUploadRepository fileUploadRepository,
-                             AgentMemoryService agentMemoryService) {
+                             AgentMemoryService agentMemoryService,
+                             AgentToolExecutionGuard executionGuard) {
         this.agenticRetrievalService = agenticRetrievalService;
         this.deepSeekClient = deepSeekClient;
         this.stringRedisTemplate = stringRedisTemplate;
         this.elasticsearchClient = elasticsearchClient;
         this.fileUploadRepository = fileUploadRepository;
         this.agentMemoryService = agentMemoryService;
+        this.executionGuard = executionGuard;
         this.tools = List.of(
                 searchKnowledgeTool(),
                 generateSummaryTool(),
@@ -87,7 +90,22 @@ public class AgentToolRegistry {
         if (handler == null) {
             throw new IllegalArgumentException("未注册的工具: " + name);
         }
-        return handler.execute(arguments == null ? Collections.emptyMap() : arguments, userId, onChunk);
+        Map<String, Object> safeArguments = arguments == null ? Collections.emptyMap() : new LinkedHashMap<>(arguments);
+        return executionGuard.execute(
+                name,
+                userId,
+                riskLevel(name),
+                () -> handler.execute(safeArguments, userId, onChunk)
+        );
+    }
+
+    private AgentToolExecutionGuard.RiskLevel riskLevel(String name) {
+        return switch (name) {
+            case "search_knowledge", "knowledge_stats" -> AgentToolExecutionGuard.RiskLevel.READ_ONLY;
+            case "generate_summary" -> AgentToolExecutionGuard.RiskLevel.GENERATIVE;
+            case "submit_feedback" -> AgentToolExecutionGuard.RiskLevel.WRITE_USER_SCOPE;
+            default -> throw new IllegalArgumentException("工具未声明风险等级: " + name);
+        };
     }
 
     private ToolExecutionResult executeSearchKnowledge(Map<String, Object> arguments,

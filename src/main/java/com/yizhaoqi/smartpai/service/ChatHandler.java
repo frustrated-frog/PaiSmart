@@ -293,8 +293,8 @@ public class ChatHandler {
         sendToolCallStatus(userId, generationId, conversationId, toolCall, "executing");
         AtomicBoolean summaryStreamStarted = new AtomicBoolean(false);
         try {
-            logger.info("ReAct 执行 Agent Tool: name={}, userId={}, generationId={}, toolCallId={}, args={}",
-                    toolCall.name(), userId, generationId, toolCall.id(), toolCall.arguments());
+            logger.info("ReAct 执行 Agent Tool: name={}, userId={}, generationId={}, toolCallId={}, argumentKeys={}",
+                    toolCall.name(), userId, generationId, toolCall.id(), toolCall.arguments().keySet());
             Consumer<String> toolChunkConsumer = "generate_summary".equals(toolCall.name())
                     ? chunk -> {
                         if (chunk == null || chunk.isEmpty()) {
