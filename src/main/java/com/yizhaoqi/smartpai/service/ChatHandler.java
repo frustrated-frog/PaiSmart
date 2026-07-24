@@ -66,6 +66,7 @@ public class ChatHandler {
     private final AgentPendingTaskService pendingTaskService;
     private final QueryPlanningService queryPlanningService;
     private final AgentLoopGuard agentLoopGuard;
+    private final AgentTaskLedgerService taskLedgerService;
     private final AgentMemoryService agentMemoryService;
     private final AgentContextBudgetService contextBudgetService;
     private final AgentErrorSanitizer errorSanitizer;
@@ -100,6 +101,7 @@ public class ChatHandler {
                       AgentPendingTaskService pendingTaskService,
                       QueryPlanningService queryPlanningService,
                       AgentLoopGuard agentLoopGuard,
+                      AgentTaskLedgerService taskLedgerService,
                       AgentMemoryService agentMemoryService,
                       AgentContextBudgetService contextBudgetService,
                       AgentErrorSanitizer errorSanitizer,
@@ -117,6 +119,7 @@ public class ChatHandler {
         this.pendingTaskService = pendingTaskService;
         this.queryPlanningService = queryPlanningService;
         this.agentLoopGuard = agentLoopGuard;
+        this.taskLedgerService = taskLedgerService;
         this.agentMemoryService = agentMemoryService;
         this.contextBudgetService = contextBudgetService;
         this.errorSanitizer = errorSanitizer;
@@ -162,7 +165,7 @@ public class ChatHandler {
                 handleClarificationRequest(userId, executionMessage, conversationId, generationId, queryPlan);
                 return;
             }
-            launchGeneration(userId, executionMessage, conversationId, generationId, null,
+            launchGeneration(userId, executionMessage, conversationId, generationId, queryPlan, null,
                     resolvedClarification.orElse(null));
 
         } catch (RateLimitExceededException e) {
@@ -196,7 +199,8 @@ public class ChatHandler {
         );
         agentRunService.startRetry(generation.generationId(), source);
         generationPersistedUserMessages.put(generation.generationId(), source.question());
-        launchGeneration(userId, source.question(), source.conversationId(), generation.generationId(), source, null);
+        QueryPlan queryPlan = queryPlanningService.plan(source.question(), userId);
+        launchGeneration(userId, source.question(), source.conversationId(), generation.generationId(), queryPlan, source, null);
         return new RetryLaunch(
                 generation.generationId(),
                 source.generationId(),
@@ -209,9 +213,18 @@ public class ChatHandler {
                                   String userMessage,
                                   String conversationId,
                                   String generationId,
+                                  QueryPlan queryPlan,
                                   AgentRunService.RetryCandidate retrySource,
                                   AgentPendingTaskService.ResolvedClarification clarificationSource) {
         sendGenerationStart(userId, generationId, conversationId);
+        taskLedgerService.initialize(generationId, queryPlan).ifPresent(ledger -> {
+            agentRunService.checkpointState(generationId, "TASK_LEDGER_CREATED", Map.of("taskLedger", ledger));
+            sendAgentStep(userId, generationId, conversationId,
+                    "task-ledger", "planning", "completed", "已创建可恢复任务账本",
+                    "已拆解目标、验收条件和下一步动作；每轮工具执行后都会更新进度",
+                    null,
+                    Map.of("taskLedger", ledger));
+        });
         if (retrySource != null) {
             sendAgentStep(userId, generationId, conversationId,
                     "retry-lineage", "recovery", "completed", "恢复 Agent 运行",
@@ -503,6 +516,13 @@ public class ChatHandler {
             AgentToolRegistry.ToolExecutionResult toolResult =
                     agentToolRegistry.executeTool(toolCall.name(), toolCall.arguments(), userId, toolChunkConsumer);
 
+            taskLedgerService.observeToolResult(generationId, toolCall.name(), toolResult.data())
+                    .ifPresent(ledger -> agentRunService.checkpointState(
+                            generationId,
+                            "TASK_LEDGER_UPDATED",
+                            Map.of("toolCallId", toolCall.id(), "toolName", toolCall.name(), "taskLedger", ledger)
+                    ));
+
             // search_knowledge 返回的 SearchResult 列表与模型 prompt 中的 [N] 编号一一对应，
             // 必须把它落到 generationReferenceMappings 里，否则前端点击引用拿不到 MD5/页码。
             if ("search_knowledge".equals(toolCall.name())) {
@@ -685,9 +705,14 @@ public class ChatHandler {
                                                                 List<Map<String, Object>> messages,
                                                                 List<AgentToolRegistry.AgentTool> tools) {
         CompletableFuture<LlmProviderRouter.ReActTurn> turnFuture = new CompletableFuture<>();
+        List<Map<String, Object>> modelMessages = new ArrayList<>(messages);
+        String taskGuidance = taskLedgerService.buildModelGuidance(generationId);
+        if (!taskGuidance.isBlank()) {
+            modelMessages.add(Map.of("role", "system", "content", taskGuidance));
+        }
         LlmProviderRouter.StreamHandle streamHandle = llmProviderRouter.streamReActTurn(
                 userId,
-                messages,
+                modelMessages,
                 tools,
                 REACT_MAX_COMPLETION_TOKENS,
                 chunk -> appendStreamChunk(userId, generationId, conversationId, chunk),
@@ -819,6 +844,9 @@ public class ChatHandler {
         if (!responseFuture.complete(completeResponse)) {
             return;
         }
+        taskLedgerService.completeAnswer(generationId).ifPresent(ledger ->
+                agentRunService.checkpointState(generationId, "TASK_LEDGER_COMPLETED", Map.of("taskLedger", ledger))
+        );
         sendAgentStep(userId, generationId, conversationId,
                 "finalize", "finalizing", "completed", "整理答案与引用",
                 "回答已完成，共 " + completeResponse.length() + " 个字符",
@@ -879,6 +907,7 @@ public class ChatHandler {
         generationPersistedUserMessages.remove(generationId);
         generationTerminalReasons.remove(generationId);
         agentLoopGuard.clear(generationId);
+        taskLedgerService.clear(generationId);
         stopFlags.remove(generationId);
         activeStreams.remove(generationId);
         cancelledGenerations.remove(generationId);

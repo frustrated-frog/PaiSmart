@@ -430,6 +430,12 @@ public class AgentRunService {
         }
     }
 
+    /** 持久化运行时扩展状态，供任务账本、工具账本和恢复协议共同使用。 */
+    @Transactional
+    public void checkpointState(String generationId, String type, Map<String, Object> state) {
+        checkpoint(generationId, type, state);
+    }
+
     private String writeJson(Map<String, Object> value) {
         if (value == null || value.isEmpty()) {
             return "{}";
