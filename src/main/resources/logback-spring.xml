@@ -114,8 +114,9 @@
     <!-- 开发环境配置 -->
     <springProfile name="dev">
         <logger name="com.yizhaoqi.smartpai" level="DEBUG"/>
-        <logger name="org.springframework.web" level="DEBUG"/>
-        <logger name="org.springframework.security" level="DEBUG"/>
+        <!-- Web/Security DEBUG 会记录登录 DTO 与 WebSocket URI，默认关闭以防凭据进入日志。 -->
+        <logger name="org.springframework.web" level="INFO"/>
+        <logger name="org.springframework.security" level="INFO"/>
     </springProfile>
 
     <!-- 生产环境配置 -->
@@ -131,4 +132,4 @@
         <appender-ref ref="FILE"/>
         <appender-ref ref="ERROR_FILE"/>
     </root>
-</configuration> 
+</configuration>

@@ -483,7 +483,13 @@ public class UserController {
 }
 
 // 用户请求记录类
-record UserRequest(String username, String password, String inviteCode) {}
+record UserRequest(String username, String password, String inviteCode) {
+    @Override
+    public String toString() {
+        return "UserRequest[username=" + username + ", password=[REDACTED], inviteCode="
+                + (inviteCode == null || inviteCode.isBlank() ? "null" : "[REDACTED]") + "]";
+    }
+}
 
 // 主组织标签请求记录类
 record PrimaryOrgRequest(String primaryOrg) {}
