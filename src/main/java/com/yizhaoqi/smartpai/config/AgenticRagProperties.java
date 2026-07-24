@@ -63,6 +63,21 @@ public class AgenticRagProperties {
         private double minNdcgAtK = 0.65d;
         private double maxZeroRecallRate = 0.15d;
         private long maxP95LatencyMs = 3000L;
+        private double minClarificationF1 = 0.80d;
+        private double minIntentMacroF1 = 0.80d;
+        private double minEvidenceStatusMacroF1 = 0.80d;
+        private double minConflictDetectionF1 = 0.80d;
+        private double minTrajectoryScore = 0.80d;
+        private double maxInvalidTransitionRate = 0.05d;
+        private double minToolSelectionF1 = 0.80d;
+        private double minToolArgumentAccuracy = 0.80d;
+        private double minCitationF1 = 0.80d;
+        private double minClaimCoverage = 0.80d;
+        private double maxDuplicateActionRate = 0.05d;
+        private double minTerminalReasonAccuracy = 0.90d;
+        private double minResumeSuccessRate = 0.80d;
+        private double maxDuplicateSideEffectRate = 0D;
+        private double minPassPowerK = 0.70d;
     }
 
     @Data

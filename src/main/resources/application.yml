@@ -271,6 +271,21 @@ agentic-rag:
     min-ndcg-at-k: ${AGENTIC_RAG_EVAL_MIN_NDCG_AT_K:0.65}
     max-zero-recall-rate: ${AGENTIC_RAG_EVAL_MAX_ZERO_RECALL_RATE:0.15}
     max-p95-latency-ms: ${AGENTIC_RAG_EVAL_MAX_P95_LATENCY_MS:3000}
+    min-clarification-f1: ${AGENT_EVAL_MIN_CLARIFICATION_F1:0.80}
+    min-intent-macro-f1: ${AGENT_EVAL_MIN_INTENT_MACRO_F1:0.80}
+    min-evidence-status-macro-f1: ${AGENT_EVAL_MIN_EVIDENCE_STATUS_MACRO_F1:0.80}
+    min-conflict-detection-f1: ${AGENT_EVAL_MIN_CONFLICT_DETECTION_F1:0.80}
+    min-trajectory-score: ${AGENT_EVAL_MIN_TRAJECTORY_SCORE:0.80}
+    max-invalid-transition-rate: ${AGENT_EVAL_MAX_INVALID_TRANSITION_RATE:0.05}
+    min-tool-selection-f1: ${AGENT_EVAL_MIN_TOOL_SELECTION_F1:0.80}
+    min-tool-argument-accuracy: ${AGENT_EVAL_MIN_TOOL_ARGUMENT_ACCURACY:0.80}
+    min-citation-f1: ${AGENT_EVAL_MIN_CITATION_F1:0.80}
+    min-claim-coverage: ${AGENT_EVAL_MIN_CLAIM_COVERAGE:0.80}
+    max-duplicate-action-rate: ${AGENT_EVAL_MAX_DUPLICATE_ACTION_RATE:0.05}
+    min-terminal-reason-accuracy: ${AGENT_EVAL_MIN_TERMINAL_REASON_ACCURACY:0.90}
+    min-resume-success-rate: ${AGENT_EVAL_MIN_RESUME_SUCCESS_RATE:0.80}
+    max-duplicate-side-effect-rate: ${AGENT_EVAL_MAX_DUPLICATE_SIDE_EFFECT_RATE:0.0}
+    min-pass-power-k: ${AGENT_EVAL_MIN_PASS_POWER_K:0.70}
   tools:
     timeout-seconds: ${AGENT_TOOL_TIMEOUT_SECONDS:90}
     max-concurrent-per-user: ${AGENT_TOOL_MAX_CONCURRENT_PER_USER:2}

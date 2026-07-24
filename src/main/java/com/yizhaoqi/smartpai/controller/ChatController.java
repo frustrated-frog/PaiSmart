@@ -5,6 +5,7 @@ import com.yizhaoqi.smartpai.service.AgentToolRegistry;
 import com.yizhaoqi.smartpai.service.AgentMemoryService;
 import com.yizhaoqi.smartpai.service.AgentRunService;
 import com.yizhaoqi.smartpai.evaluation.RetrievalEvaluationService;
+import com.yizhaoqi.smartpai.evaluation.AgentEvaluationService;
 import com.yizhaoqi.smartpai.service.ChatGenerationStateService;
 import com.yizhaoqi.smartpai.service.ChatHandler;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
@@ -36,6 +37,7 @@ public class ChatController {
     private final AgentMemoryService agentMemoryService;
     private final AgentRunService agentRunService;
     private final RetrievalEvaluationService retrievalEvaluationService;
+    private final AgentEvaluationService agentEvaluationService;
     private final ChatHandler chatHandler;
 
     public ChatController(JwtUtils jwtUtils,
@@ -44,6 +46,7 @@ public class ChatController {
                           AgentMemoryService agentMemoryService,
                           AgentRunService agentRunService,
                           RetrievalEvaluationService retrievalEvaluationService,
+                          AgentEvaluationService agentEvaluationService,
                           ChatHandler chatHandler) {
         this.jwtUtils = jwtUtils;
         this.chatGenerationStateService = chatGenerationStateService;
@@ -51,6 +54,7 @@ public class ChatController {
         this.agentMemoryService = agentMemoryService;
         this.agentRunService = agentRunService;
         this.retrievalEvaluationService = retrievalEvaluationService;
+        this.agentEvaluationService = agentEvaluationService;
         this.chatHandler = chatHandler;
     }
     
@@ -196,6 +200,24 @@ public class ChatController {
         }
     }
 
+    @PostMapping("/evaluations/agent")
+    public ResponseEntity<?> evaluateAgent(@RequestHeader("Authorization") String token,
+                                           @RequestBody AgentEvaluationRequest request) {
+        String userId = extractValidatedUserId(token);
+        if (userId == null) {
+            return ResponseEntity.status(401).body(responseBody(401, "Invalid token", null));
+        }
+        try {
+            return ResponseEntity.ok(responseBody(
+                    200,
+                    "Agent 轨迹评测完成",
+                    agentEvaluationService.evaluate(request == null ? null : request.attempts())
+            ));
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(responseBody(400, exception.getMessage(), null));
+        }
+    }
+
     @PutMapping("/memories/{memoryId}/status")
     public ResponseEntity<?> updateMemoryStatus(@PathVariable long memoryId,
                                                 @RequestHeader("Authorization") String token,
@@ -314,5 +336,8 @@ public class ChatController {
     }
 
     public record RetrievalEvaluationRequest(List<RetrievalEvaluationService.EvaluationCase> cases) {
+    }
+
+    public record AgentEvaluationRequest(List<AgentEvaluationService.EvaluationAttempt> attempts) {
     }
 }

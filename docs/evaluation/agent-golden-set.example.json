@@ -1,0 +1,45 @@
+{
+  "attempts": [
+    {
+      "caseId": "multi-hop-rag-001",
+      "attemptIndex": 1,
+      "expectedClarification": false,
+      "actualClarification": false,
+      "expectedClarificationSlots": [],
+      "actualClarificationSlots": [],
+      "expectedTrajectory": ["planning", "retrieval", "evidence_verification", "answer"],
+      "actualTrajectory": ["planning", "retrieval", "evidence_verification", "answer"],
+      "expectedTools": [
+        {"name": "search_knowledge", "argumentsFingerprint": "query=agent-memory;topK=5"}
+      ],
+      "actualTools": [
+        {"name": "search_knowledge", "argumentsFingerprint": "query=agent-memory;topK=5"}
+      ],
+      "expectedCitationIds": ["file-md5:3", "file-md5:8"],
+      "actualCitationIds": ["file-md5:3", "file-md5:8"],
+      "requiredClaimIds": ["memory-layering", "checkpoint-recovery"],
+      "supportedClaimIds": ["memory-layering", "checkpoint-recovery"],
+      "duplicateActionCount": 0,
+      "totalActionCount": 1,
+      "expectedTerminalReason": "ANSWERED",
+      "actualTerminalReason": "ANSWERED",
+      "passed": true,
+      "signals": {
+        "expectedIntent": "MULTI_HOP",
+        "actualIntent": "MULTI_HOP",
+        "expectedEvidenceStatus": "SUFFICIENT",
+        "actualEvidenceStatus": "SUFFICIENT",
+        "expectedConflict": false,
+        "actualConflict": false,
+        "recoveryAttempt": false,
+        "recoverySucceeded": false,
+        "reusedStepCount": 0,
+        "duplicateSideEffectCount": 0,
+        "writeActionCount": 0,
+        "latencyMs": 1280,
+        "promptTokens": 920,
+        "completionTokens": 310
+      }
+    }
+  ]
+}
