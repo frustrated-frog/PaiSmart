@@ -117,6 +117,31 @@ class ModelProviderConfigServiceTest {
     }
 
     @Test
+    void shouldOrderActiveProviderBeforeConfiguredFallbacks() {
+        service.updateScope(
+                ModelProviderConfigService.SCOPE_LLM,
+                new ModelProviderConfigService.UpdateScopeRequest(
+                        "qwen",
+                        List.of(
+                                new ModelProviderConfigService.ProviderUpsertRequest(
+                                        "deepseek", "https://api.deepseek.com/v1", "deepseek-chat", "", null, true),
+                                new ModelProviderConfigService.ProviderUpsertRequest(
+                                        "qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-flash", "sk-qwen", null, true),
+                                new ModelProviderConfigService.ProviderUpsertRequest(
+                                        "zhipu", "https://open.bigmodel.cn/api/paas/v4", "glm-4.5-air", "", null, true)
+                        )
+                ),
+                "admin"
+        );
+
+        List<ModelProviderConfigService.ActiveProviderView> candidates =
+                service.getProviderCandidates(ModelProviderConfigService.SCOPE_LLM);
+
+        assertEquals(List.of("qwen", "deepseek"), candidates.stream().map(
+                ModelProviderConfigService.ActiveProviderView::provider).toList());
+    }
+
+    @Test
     void shouldRejectUnsafeEmbeddingProviderSwitch() {
         ModelProviderConfigService.UpdateScopeRequest request = new ModelProviderConfigService.UpdateScopeRequest(
                 "zhipu",

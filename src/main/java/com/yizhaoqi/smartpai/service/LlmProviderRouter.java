@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -80,7 +81,7 @@ public class LlmProviderRouter {
                     .subscribe(
                             chunk -> processChunk(chunk, usageTracker, onChunk),
                             error -> {
-                                settleUsage(usageTracker);
+                                failStreamUsage(usageTracker);
                                 onError.accept(error);
                             },
                             () -> {
@@ -179,36 +180,46 @@ public class LlmProviderRouter {
                                        List<Map<String, Object>> messages,
                                        List<AgentToolRegistry.AgentTool> tools,
                                        int maxCompletionTokens) {
-        ModelProviderConfigService.ActiveProviderView provider =
-                modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM);
+        List<ModelProviderConfigService.ActiveProviderView> providers = llmProviderCandidates();
         AgentContextBudgetService.CompactionResult compaction = contextBudgetService.compact(messages);
         List<Map<String, Object>> compactedMessages = compaction.messages();
         logCompaction(compaction);
-        Map<String, Object> request = buildReActRequest(provider.model(), compactedMessages, tools, maxCompletionTokens, false);
-
         int estimatedPromptTokens = estimateObjectMessagesTokens(compactedMessages)
                 + (tools == null || tools.isEmpty() ? 0 : estimateToolsTokens(tools));
         UsageQuotaService.TokenReservationBundle reservation = rateLimitService.reserveLlmUsage(
                 requesterId, estimatedPromptTokens, maxCompletionTokens);
 
-        try {
-            String responseBody = buildClient(provider)
-                    .post()
-                    .uri("/chat/completions")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(request)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block(Duration.ofSeconds(90));
-            ReActTurn turn = parseReActTurn(responseBody, estimatedPromptTokens);
-            usageQuotaService.settleReservation(reservation, turn.promptTokens() + turn.completionTokens());
-            logger.info("ReAct 回合完成: provider={}, model={}, finishReason={}, toolCalls={}, contentChars={}",
-                    provider.provider(), provider.model(), turn.finishReason(), turn.toolCalls().size(), turn.content().length());
-            return turn;
-        } catch (Exception exception) {
-            usageQuotaService.abortReservation(reservation);
-            throw new RuntimeException("ReAct 模型回合调用失败", exception);
+        Throwable lastError = null;
+        for (int index = 0; index < providers.size(); index++) {
+            ModelProviderConfigService.ActiveProviderView provider = providers.get(index);
+            Map<String, Object> request = buildReActRequest(
+                    provider.model(), compactedMessages, tools, maxCompletionTokens, false);
+            try {
+                String responseBody = buildClient(provider)
+                        .post()
+                        .uri("/chat/completions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(request)
+                        .retrieve()
+                        .bodyToMono(String.class)
+                        .block(Duration.ofSeconds(90));
+                ReActTurn turn = parseReActTurn(responseBody, estimatedPromptTokens);
+                usageQuotaService.settleReservation(reservation, turn.promptTokens() + turn.completionTokens());
+                logger.info("ReAct 回合完成: provider={}, model={}, finishReason={}, toolCalls={}, contentChars={}",
+                        provider.provider(), provider.model(), turn.finishReason(), turn.toolCalls().size(), turn.content().length());
+                return turn;
+            } catch (Exception exception) {
+                lastError = exception;
+                logProviderError("ReAct 模型回合调用失败: provider=" + provider.provider(), exception);
+                if (!canFailover(exception, index, providers.size())) {
+                    break;
+                }
+                logger.warn("切换到备用 LLM: failedProvider={}, nextProvider={}",
+                        provider.provider(), providers.get(index + 1).provider());
+            }
         }
+        usageQuotaService.abortReservation(reservation);
+        throw new RuntimeException("所有已配置 LLM 均调用失败", lastError);
     }
 
     public StreamHandle streamReActTurn(String requesterId,
@@ -218,12 +229,10 @@ public class LlmProviderRouter {
                                         Consumer<String> onChunk,
                                         Consumer<Throwable> onError,
                                         Consumer<ReActTurn> onComplete) {
-        ModelProviderConfigService.ActiveProviderView provider =
-                modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM);
+        List<ModelProviderConfigService.ActiveProviderView> providers = llmProviderCandidates();
         AgentContextBudgetService.CompactionResult compaction = contextBudgetService.compact(messages);
         List<Map<String, Object>> compactedMessages = compaction.messages();
         logCompaction(compaction);
-        Map<String, Object> request = buildReActRequest(provider.model(), compactedMessages, tools, maxCompletionTokens, true);
         int estimatedPromptTokens = estimateObjectMessagesTokens(compactedMessages)
                 + (tools == null || tools.isEmpty() ? 0 : estimateToolsTokens(tools));
         UsageQuotaService.TokenReservationBundle reservation = rateLimitService.reserveLlmUsage(
@@ -231,26 +240,21 @@ public class LlmProviderRouter {
         ReActStreamAccumulator accumulator = new ReActStreamAccumulator(reservation, estimatedPromptTokens);
 
         try {
-            Disposable subscription = buildClient(provider)
-                    .post()
-                    .uri("/chat/completions")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(request)
-                    .retrieve()
-                    .bodyToFlux(String.class)
+            Disposable subscription = streamWithFailover(
+                    providers, 0, compactedMessages, tools, maxCompletionTokens, accumulator)
                     .subscribe(
                             chunk -> processReActStreamChunk(chunk, accumulator, onChunk),
                             error -> {
                                 logProviderError("ReAct 流式回合调用失败", error);
-                                settleReActStreamUsage(accumulator);
+                                failReActStreamUsage(accumulator);
                                 onError.accept(error);
                             },
                             () -> {
                                 settleReActStreamUsage(accumulator);
                                 ReActTurn turn = accumulator.toTurn();
                                 logger.info("ReAct 流式回合完成: provider={}, model={}, finishReason={}, toolCalls={}, contentChars={}",
-                                        provider.provider(),
-                                        provider.model(),
+                                        accumulator.resolvedProvider,
+                                        accumulator.resolvedModel,
                                         turn.finishReason(),
                                         turn.toolCalls().size(),
                                         turn.content().length());
@@ -262,6 +266,59 @@ public class LlmProviderRouter {
             usageQuotaService.abortReservation(reservation);
             throw exception;
         }
+    }
+
+    private Flux<String> streamWithFailover(
+            List<ModelProviderConfigService.ActiveProviderView> providers,
+            int index,
+            List<Map<String, Object>> messages,
+            List<AgentToolRegistry.AgentTool> tools,
+            int maxCompletionTokens,
+            ReActStreamAccumulator accumulator) {
+        ModelProviderConfigService.ActiveProviderView provider = providers.get(index);
+        Map<String, Object> request = buildReActRequest(
+                provider.model(), messages, tools, maxCompletionTokens, true);
+        return buildClient(provider)
+                .post()
+                .uri("/chat/completions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(request)
+                .retrieve()
+                .bodyToFlux(String.class)
+                .doOnSubscribe(ignored -> accumulator.selectProvider(provider.provider(), provider.model()))
+                .onErrorResume(error -> {
+                    logProviderError("ReAct 流式回合调用失败: provider=" + provider.provider(), error);
+                    if (!accumulator.hasOutput() && canFailover(error, index, providers.size())) {
+                        ModelProviderConfigService.ActiveProviderView next = providers.get(index + 1);
+                        logger.warn("流式 ReAct 切换到备用 LLM: failedProvider={}, nextProvider={}",
+                                provider.provider(), next.provider());
+                        return streamWithFailover(providers, index + 1, messages, tools, maxCompletionTokens, accumulator);
+                    }
+                    return Flux.error(error);
+                });
+    }
+
+    private List<ModelProviderConfigService.ActiveProviderView> llmProviderCandidates() {
+        List<ModelProviderConfigService.ActiveProviderView> candidates =
+                modelProviderConfigService.getProviderCandidates(ModelProviderConfigService.SCOPE_LLM);
+        return candidates.isEmpty()
+                ? List.of(modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM))
+                : candidates;
+    }
+
+    private boolean canFailover(Throwable error, int currentIndex, int providerCount) {
+        if (currentIndex + 1 >= providerCount) {
+            return false;
+        }
+        Throwable current = error;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        if (current instanceof WebClientResponseException response) {
+            int status = response.getStatusCode().value();
+            return status == 401 || status == 403 || status == 408 || status == 429 || status >= 500;
+        }
+        return true;
     }
 
     private WebClient buildClient(ModelProviderConfigService.ActiveProviderView provider) {
@@ -636,6 +693,18 @@ public class LlmProviderRouter {
         usageQuotaService.settleReservation(usageTracker.reservation, actualPromptTokens + actualCompletionTokens);
     }
 
+    private void failStreamUsage(StreamUsageTracker usageTracker) {
+        if (usageTracker == null || usageTracker.settled) {
+            return;
+        }
+        if (usageTracker.responseContent.isEmpty()) {
+            usageTracker.settled = true;
+            usageQuotaService.abortReservation(usageTracker.reservation);
+            return;
+        }
+        settleUsage(usageTracker);
+    }
+
     private void settleReActStreamUsage(ReActStreamAccumulator accumulator) {
         if (accumulator == null || accumulator.settled) {
             return;
@@ -650,6 +719,18 @@ public class LlmProviderRouter {
                 : usageQuotaService.estimateTextTokens(accumulator.content.toString())
                 + estimateObjectMessagesTokens(List.of(accumulator.assistantMessage()));
         usageQuotaService.settleReservation(accumulator.reservation, actualPromptTokens + actualCompletionTokens);
+    }
+
+    private void failReActStreamUsage(ReActStreamAccumulator accumulator) {
+        if (accumulator == null || accumulator.settled) {
+            return;
+        }
+        if (!accumulator.hasOutput()) {
+            accumulator.settled = true;
+            usageQuotaService.abortReservation(accumulator.reservation);
+            return;
+        }
+        settleReActStreamUsage(accumulator);
     }
 
     private static final class StreamUsageTracker {
@@ -677,10 +758,21 @@ public class LlmProviderRouter {
         private volatile int completionTokens;
         private volatile String finishReason;
         private volatile boolean settled;
+        private volatile String resolvedProvider = "unknown";
+        private volatile String resolvedModel = "unknown";
 
         private ReActStreamAccumulator(UsageQuotaService.TokenReservationBundle reservation, int estimatedPromptTokens) {
             this.reservation = reservation;
             this.estimatedPromptTokens = estimatedPromptTokens;
+        }
+
+        private void selectProvider(String provider, String model) {
+            this.resolvedProvider = provider;
+            this.resolvedModel = model;
+        }
+
+        private boolean hasOutput() {
+            return !content.isEmpty() || !reasoningContent.isEmpty() || !toolCalls.isEmpty();
         }
 
         private void appendToolCallDelta(JsonNode delta) {

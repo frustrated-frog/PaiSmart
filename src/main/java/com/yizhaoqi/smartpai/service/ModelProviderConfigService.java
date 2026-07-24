@@ -76,8 +76,20 @@ public class ModelProviderConfigService {
         return settings.providers().stream()
                 .filter(ProviderConfigView::active)
                 .findFirst()
-                .map(this::toActiveProvider)
+                .map(provider -> toActiveProvider(settings.scope(), provider))
                 .orElseThrow(() -> new CustomException("未找到激活的模型配置: " + scope, HttpStatus.INTERNAL_SERVER_ERROR));
+    }
+
+    /** 激活模型优先，其余已启用且已配置密钥的模型作为故障转移候选。 */
+    public List<ActiveProviderView> getProviderCandidates(String scope) {
+        ScopeSettingsView settings = resolveScope(scope, currentSettings);
+        return settings.providers().stream()
+                .filter(ProviderConfigView::enabled)
+                .filter(ProviderConfigView::hasApiKey)
+                .sorted(Comparator.comparing(ProviderConfigView::active).reversed()
+                        .thenComparing(ProviderConfigView::provider))
+                .map(provider -> toActiveProvider(settings.scope(), provider))
+                .toList();
     }
 
     public synchronized ScopeSettingsView updateScope(String scope, UpdateScopeRequest request, String updatedBy) {
@@ -262,9 +274,9 @@ public class ModelProviderConfigService {
         return new ScopeSettingsView(defaults.scope(), activeProvider, providers);
     }
 
-    private ActiveProviderView toActiveProvider(ProviderConfigView provider) {
+    private ActiveProviderView toActiveProvider(String scope, ProviderConfigView provider) {
         String apiKey = null;
-        Optional<ModelProviderConfig> persisted = repository.findByConfigScopeAndProviderCode(resolveScopeByProvider(provider.provider()), provider.provider());
+        Optional<ModelProviderConfig> persisted = repository.findByConfigScopeAndProviderCode(scope, provider.provider());
         if (persisted.isPresent()) {
             apiKey = secretCryptoService.decrypt(persisted.get().getApiKeyCiphertext());
         } else if ("deepseek".equals(provider.provider())) {

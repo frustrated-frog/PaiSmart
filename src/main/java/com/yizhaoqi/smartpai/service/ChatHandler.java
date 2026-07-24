@@ -1021,8 +1021,33 @@ public class ChatHandler {
         Map<String, Object> errorResponse = new HashMap<>();
         errorResponse.put("type", "error");
         errorResponse.put("generationId", generationId);
-        errorResponse.put("error", "AI服务暂时不可用，请稍后重试");
+        errorResponse.put("error", userFacingError(error));
         chatSessionRegistry.sendJsonToUser(userId, errorResponse);
+    }
+
+    private String userFacingError(Throwable error) {
+        String message = rootErrorMessage(error).toLowerCase(java.util.Locale.ROOT);
+        if (message.contains("401") || message.contains("unauthorized") || message.contains("authentication fails")) {
+            return "模型服务认证失败，请在「模型配置」中更新 API Key 或启用备用模型";
+        }
+        if (message.contains("429") || message.contains("too many requests")) {
+            return "模型服务当前限流，请稍后重试或切换备用模型";
+        }
+        if (message.contains("timeout") || message.contains("超时")) {
+            return "模型服务响应超时，Agent 已安全中断，请稍后重试";
+        }
+        return "AI 服务暂时不可用，Agent 运行记录已保留";
+    }
+
+    private String rootErrorMessage(Throwable error) {
+        if (error == null) {
+            return "";
+        }
+        Throwable current = error;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
     private void markFailedGeneration(String generationId, String errorMessage) {
