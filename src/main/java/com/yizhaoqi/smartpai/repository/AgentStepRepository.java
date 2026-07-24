@@ -7,4 +7,5 @@ import java.util.List;
 
 public interface AgentStepRepository extends JpaRepository<AgentStep, Long> {
     List<AgentStep> findByGenerationIdOrderByIdAsc(String generationId);
+    List<AgentStep> findByGenerationIdInOrderByIdAsc(List<String> generationIds);
 }

@@ -12,6 +12,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
   const sessions = ref<Api.Chat.ConversationSession[]>([]);
   const sessionsLoading = ref(false);
   const activeTab = ref<'active' | 'archived'>('active');
+  const agentRunMetrics = ref<Api.Chat.AgentRunMetrics | null>(null);
 
   const store = useAuthStore();
 
@@ -204,6 +205,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     if (!error && data) {
       conversationId.value = data.conversationId;
       list.value = [];
+      agentRunMetrics.value = null;
       await loadSessions();
     }
     return !error;
@@ -211,6 +213,9 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
 
   async function switchSession(targetConversationId: string) {
     if (targetConversationId === conversationId.value) {
+      if (list.value.length === 0) {
+        await loadMessages(targetConversationId);
+      }
       return;
     }
     const { error } = await request({
@@ -273,7 +278,21 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
         const rightTime = right.timestamp ? Date.parse(right.timestamp) : 0;
         return leftTime - rightTime;
       });
+      await loadAgentRunMetrics(cid);
     }
+  }
+
+  async function loadAgentRunMetrics(targetConversationId?: string) {
+    const cid = targetConversationId || conversationId.value;
+    if (!cid) {
+      agentRunMetrics.value = null;
+      return;
+    }
+    const { error, data } = await request<Api.Chat.AgentRunMetrics>({
+      url: 'chat/agent-runs/metrics',
+      params: { conversationId: cid, windowDays: 30 }
+    });
+    agentRunMetrics.value = error ? null : data || null;
   }
 
   async function archiveSession(targetConversationId: string) {
@@ -286,6 +305,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
       if (targetConversationId === conversationId.value) {
         list.value = [];
         conversationId.value = '';
+        agentRunMetrics.value = null;
       }
     }
   }
@@ -425,6 +445,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     input.value = { message: '' };
     list.value = [];
     sessions.value = [];
+    agentRunMetrics.value = null;
     wsClose(1000, 'auth-reset');
   }
 
@@ -474,6 +495,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     list,
     sessions,
     sessionsLoading,
+    agentRunMetrics,
     activeTab,
     filteredSessions,
     connectionStatus,
@@ -497,6 +519,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     createNewSession,
     switchSession,
     loadMessages,
+    loadAgentRunMetrics,
     archiveSession,
     unarchiveSession
   };

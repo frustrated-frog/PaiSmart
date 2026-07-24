@@ -108,6 +108,7 @@ function handleCompletionPayload(assistant: Api.Chat.Message, payload: Record<st
   markExecutingToolsAsSuccess(assistant);
   settleRunningAgentSteps(assistant, payload.status === 'failed' ? 'failed' : 'completed');
   stopGenerationStatusMonitor();
+  chatStore.loadAgentRunMetrics(payload.conversationId || assistant.conversationId).catch(() => {});
 }
 
 function handleStopPayload(assistant: Api.Chat.Message) {

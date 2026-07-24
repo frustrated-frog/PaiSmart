@@ -6,7 +6,13 @@ defineOptions({
 const collapsed = defineModel<boolean>('collapsed', { default: false });
 
 const chatStore = useChatStore();
-const { conversationId, sessionsLoading, filteredSessions, activeTab } = storeToRefs(chatStore);
+const { conversationId, sessionsLoading, filteredSessions, activeTab, agentRunMetrics } = storeToRefs(chatStore);
+
+const successRateLabel = computed(() => `${Math.round((agentRunMetrics.value?.successRate || 0) * 100)}%`);
+const p95LatencyLabel = computed(() => {
+  const latency = agentRunMetrics.value?.p95LatencyMs || 0;
+  return latency < 1000 ? `${latency}ms` : `${(latency / 1000).toFixed(1)}s`;
+});
 
 onMounted(() => {
   chatStore.loadSessions();
@@ -100,6 +106,30 @@ function formatDate(dateStr?: string) {
         @click="setActiveTab('archived')"
       >
         已归档
+      </div>
+    </div>
+
+    <div v-if="conversationId && agentRunMetrics?.totalRuns" class="mx-3 mb-2 rounded-xl border border-[rgb(var(--primary-color)/0.12)] bg-[rgb(var(--primary-color)/0.045)] p-3">
+      <div class="mb-2 flex items-center justify-between">
+        <span class="text-9px font-700 tracking-[0.12em] text-[rgb(var(--primary-color))]">RUN HEALTH · 30D</span>
+        <span class="text-10px color-#999">{{ agentRunMetrics.totalRuns }} runs</span>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <div class="rounded-lg bg-white/70 px-2 py-1.5 dark:bg-white/5">
+          <div class="text-10px color-#999">成功率</div>
+          <div class="text-14px font-650">{{ successRateLabel }}</div>
+        </div>
+        <div class="rounded-lg bg-white/70 px-2 py-1.5 dark:bg-white/5">
+          <div class="text-10px color-#999">P95</div>
+          <div class="text-14px font-650">{{ p95LatencyLabel }}</div>
+        </div>
+        <div class="rounded-lg bg-white/70 px-2 py-1.5 dark:bg-white/5">
+          <div class="text-10px color-#999">平均步骤</div>
+          <div class="text-14px font-650">{{ agentRunMetrics.averageSteps }}</div>
+        </div>
+      </div>
+      <div v-if="agentRunMetrics.retryCount" class="mt-2 text-10px color-#888">
+        checkpoint 恢复 {{ agentRunMetrics.retryCount }} 次 · 成功率 {{ Math.round(agentRunMetrics.retryRecoveryRate * 100) }}%
       </div>
     </div>
 

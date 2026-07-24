@@ -15,6 +15,7 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -201,6 +202,72 @@ public class AgentRunService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public RunMetrics metrics(String userId, String conversationId, int requestedWindowDays) {
+        int windowDays = Math.max(1, Math.min(90, requestedWindowDays));
+        LocalDateTime windowStart = LocalDateTime.now().minusDays(windowDays);
+        List<AgentRun> runs = runRepository.findByUserIdAndCreatedAtAfterOrderByCreatedAtAsc(userId, windowStart).stream()
+                .filter(run -> conversationId == null || conversationId.isBlank() || conversationId.equals(run.getConversationId()))
+                .toList();
+
+        Map<String, Long> statusCounts = new LinkedHashMap<>();
+        for (String status : List.of("RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED")) {
+            statusCounts.put(status, 0L);
+        }
+        runs.forEach(run -> statusCounts.merge(run.getStatus(), 1L, Long::sum));
+
+        List<Long> latencies = runs.stream()
+                .filter(run -> run.getFinishedAt() != null && run.getCreatedAt() != null)
+                .map(run -> Math.max(0L, Duration.between(run.getCreatedAt(), run.getFinishedAt()).toMillis()))
+                .sorted()
+                .toList();
+        long completed = statusCounts.getOrDefault("COMPLETED", 0L);
+        long retryCount = runs.stream().filter(run -> run.getRetryOfGenerationId() != null).count();
+        long recoveredRetryCount = runs.stream()
+                .filter(run -> run.getRetryOfGenerationId() != null && "COMPLETED".equals(run.getStatus()))
+                .count();
+
+        List<String> generationIds = runs.stream().map(AgentRun::getGenerationId).toList();
+        List<AgentStep> steps = generationIds.isEmpty()
+                ? List.of()
+                : stepRepository.findByGenerationIdInOrderByIdAsc(generationIds);
+        Map<String, AgentStep> latestSteps = steps.stream().collect(Collectors.toMap(
+                step -> step.getGenerationId() + ":" + step.getStepId(),
+                Function.identity(),
+                (previous, current) -> current,
+                LinkedHashMap::new
+        ));
+        Map<String, Long> failureStages = new LinkedHashMap<>();
+        latestSteps.values().stream()
+                .filter(step -> "failed".equalsIgnoreCase(step.getStatus()))
+                .forEach(step -> failureStages.merge(step.getStage(), 1L, Long::sum));
+
+        int promptTokens = runs.stream().mapToInt(run -> valueOrZero(run.getPromptTokens())).sum();
+        int completionTokens = runs.stream().mapToInt(run -> valueOrZero(run.getCompletionTokens())).sum();
+        double successRate = ratio(completed, runs.size());
+        double retryRecoveryRate = ratio(recoveredRetryCount, retryCount);
+        double averageSteps = runs.isEmpty() ? 0D : round2((double) latestSteps.size() / runs.size());
+        long averageLatencyMs = latencies.isEmpty()
+                ? 0L
+                : Math.round(latencies.stream().mapToLong(Long::longValue).average().orElse(0D));
+
+        return new RunMetrics(
+                windowDays,
+                windowStart,
+                runs.size(),
+                statusCounts,
+                successRate,
+                averageLatencyMs,
+                percentile95(latencies),
+                averageSteps,
+                retryCount,
+                retryRecoveryRate,
+                promptTokens,
+                completionTokens,
+                failureStages
+        );
+    }
+
     /**
      * 进程重启后，旧进程中的流式连接和工具 Future 已不可恢复。
      * 将悬空 RUNNING 运行标为 INTERRUPTED，并保留最新 checkpoint 供前端展示和人工重试。
@@ -341,6 +408,26 @@ public class AgentRunService {
         }
     }
 
+    private int valueOrZero(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private double ratio(long numerator, long denominator) {
+        return denominator == 0 ? 0D : round2((double) numerator / denominator);
+    }
+
+    private double round2(double value) {
+        return Math.round(value * 100D) / 100D;
+    }
+
+    private long percentile95(List<Long> sortedValues) {
+        if (sortedValues.isEmpty()) {
+            return 0L;
+        }
+        int index = Math.max(0, (int) Math.ceil(sortedValues.size() * 0.95D) - 1);
+        return sortedValues.get(index);
+    }
+
     public record RunDetail(AgentRun run, List<AgentStep> steps, AgentCheckpoint latestCheckpoint) {
     }
 
@@ -374,5 +461,20 @@ public class AgentRunService {
                            String toolName,
                            LocalDateTime occurredAt,
                            Map<String, Object> metadata) {
+    }
+
+    public record RunMetrics(int windowDays,
+                             LocalDateTime windowStart,
+                             int totalRuns,
+                             Map<String, Long> statusCounts,
+                             double successRate,
+                             long averageLatencyMs,
+                             long p95LatencyMs,
+                             double averageSteps,
+                             long retryCount,
+                             double retryRecoveryRate,
+                             int promptTokens,
+                             int completionTokens,
+                             Map<String, Long> failureStages) {
     }
 }

@@ -15,6 +15,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Optional;
 import java.util.List;
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -103,6 +104,43 @@ class AgentRunServiceTest {
         assertThat(summaries).hasSize(1);
         assertThat(summaries.get(0).errorMessage()).doesNotContain("https://", "provider.example");
         assertThat(summaries.get(0).steps().get(0).detail()).contains("认证失败");
+    }
+
+    @Test
+    void shouldAggregateRunHealthAndRetryRecoveryMetrics() {
+        LocalDateTime now = LocalDateTime.now();
+        AgentRun completed = run("run-1", "7", "COMPLETED");
+        completed.setCreatedAt(now.minusSeconds(1));
+        completed.setFinishedAt(now);
+        completed.setPromptTokens(100);
+        completed.setCompletionTokens(40);
+
+        AgentRun failed = run("run-2", "7", "FAILED");
+        failed.setCreatedAt(now.minusSeconds(2));
+        failed.setFinishedAt(now);
+
+        AgentRun retry = run("run-3", "7", "COMPLETED");
+        retry.setCreatedAt(now.minusSeconds(3));
+        retry.setFinishedAt(now.minusSeconds(1));
+        retry.setRetryOfGenerationId("run-2");
+
+        AgentStep failedStep = new AgentStep();
+        failedStep.setGenerationId("run-2");
+        failedStep.setStepId("reasoning-1");
+        failedStep.setStage("reasoning");
+        failedStep.setStatus("failed");
+        when(runRepository.findByUserIdAndCreatedAtAfterOrderByCreatedAtAsc(any(), any()))
+                .thenReturn(List.of(completed, failed, retry));
+        when(stepRepository.findByGenerationIdInOrderByIdAsc(any())).thenReturn(List.of(failedStep));
+
+        AgentRunService.RunMetrics metrics = service.metrics("7", "conversation-1", 7);
+
+        assertThat(metrics.totalRuns()).isEqualTo(3);
+        assertThat(metrics.successRate()).isEqualTo(0.67D);
+        assertThat(metrics.p95LatencyMs()).isEqualTo(2000L);
+        assertThat(metrics.retryRecoveryRate()).isEqualTo(1D);
+        assertThat(metrics.promptTokens()).isEqualTo(100);
+        assertThat(metrics.failureStages()).containsEntry("reasoning", 1L);
     }
 
     private AgentRun run(String generationId, String userId, String status) {

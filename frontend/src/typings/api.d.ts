@@ -521,6 +521,22 @@ declare namespace Api {
       }>;
     }
 
+    interface AgentRunMetrics {
+      windowDays: number;
+      windowStart: string;
+      totalRuns: number;
+      statusCounts: Record<string, number>;
+      successRate: number;
+      averageLatencyMs: number;
+      p95LatencyMs: number;
+      averageSteps: number;
+      retryCount: number;
+      retryRecoveryRate: number;
+      promptTokens: number;
+      completionTokens: number;
+      failureStages: Record<string, number>;
+    }
+
     interface ConversationSession {
       id: number;
       conversationId: string;

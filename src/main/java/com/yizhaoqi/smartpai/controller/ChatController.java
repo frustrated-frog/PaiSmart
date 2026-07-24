@@ -131,6 +131,22 @@ public class ChatController {
         ));
     }
 
+    @GetMapping("/agent-runs/metrics")
+    public ResponseEntity<?> getAgentRunMetrics(
+            @RequestParam(required = false) String conversationId,
+            @RequestParam(defaultValue = "7") int windowDays,
+            @RequestHeader("Authorization") String token) {
+        String userId = extractValidatedUserId(token);
+        if (userId == null) {
+            return ResponseEntity.status(401).body(responseBody(401, "Invalid token", null));
+        }
+        return ResponseEntity.ok(responseBody(
+                200,
+                "获取 Agent 运行指标成功",
+                agentRunService.metrics(userId, conversationId, windowDays)
+        ));
+    }
+
     @PostMapping("/agent-runs/{generationId}/retry")
     public ResponseEntity<?> retryAgentRun(
             @PathVariable String generationId,
