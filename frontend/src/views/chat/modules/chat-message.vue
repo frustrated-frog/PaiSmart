@@ -83,6 +83,50 @@ const toolStatusLabels: Record<Api.Chat.AgentToolEvent['status'], string> = {
 };
 
 const toolEvents = computed(() => props.msg.toolEvents || []);
+const traceExpanded = ref(true);
+
+const agentSteps = computed(() => {
+  const merged = new Map<string, Api.Chat.AgentStepEvent & { startedAt: number }>();
+  for (const event of props.msg.agentEvents || []) {
+    const previous = merged.get(event.stepId);
+    merged.set(event.stepId, {
+      ...event,
+      startedAt: previous?.startedAt || event.timestamp
+    });
+  }
+  return [...merged.values()].sort((a, b) => a.startedAt - b.startedAt);
+});
+
+const agentTraceSummary = computed(() => {
+  const steps = agentSteps.value;
+  const running = steps.find(step => step.status === 'running');
+  if (running) {
+    return running.title;
+  }
+  if (steps.some(step => step.status === 'failed')) {
+    return '部分步骤执行失败，已完成降级处理';
+  }
+  if (steps.some(step => step.status === 'cancelled')) {
+    return 'Agent 已停止';
+  }
+  return `已完成 ${steps.length} 个执行步骤`;
+});
+
+function getAgentStepStatusLabel(status: Api.Chat.AgentStepEvent['status']) {
+  return {
+    running: '进行中',
+    completed: '已完成',
+    failed: '已降级',
+    cancelled: '已停止'
+  }[status];
+}
+
+function getAgentStepDuration(step: Api.Chat.AgentStepEvent & { startedAt: number }) {
+  if (step.status === 'running') return '';
+  const duration = Math.max(0, step.timestamp - step.startedAt);
+  if (duration < 1000) return '< 1s';
+  return `${(duration / 1000).toFixed(duration < 10_000 ? 1 : 0)}s`;
+}
 
 function getToolLabel(tool: string) {
   return toolNameLabels[tool] || tool;
@@ -370,11 +414,60 @@ async function handleSourceFileClick(fileInfo: {
         <SystemLogo class="text-6 text-white" />
       </NAvatar>
       <div class="flex-col gap-1">
-        <NText class="text-4 font-bold">派聪明</NText>
+        <NText class="text-4 font-bold">知枢</NText>
         <NText class="text-3 color-gray-500">{{ formatDate(msg.timestamp) }}</NText>
       </div>
     </div>
-    <div v-if="msg.role === 'assistant' && toolEvents.length > 0" class="ml-12 mt-3 flex flex-col gap-2">
+    <div v-if="msg.role === 'assistant' && agentSteps.length > 0" class="agent-trace ml-12 mt-3">
+      <button class="agent-trace__header" type="button" @click="traceExpanded = !traceExpanded">
+        <span class="agent-trace__mark">
+          <icon-ph:sparkle-fill />
+        </span>
+        <span class="agent-trace__heading">
+          <span class="agent-trace__eyebrow">AGENT WORKFLOW</span>
+          <span class="agent-trace__summary">{{ agentTraceSummary }}</span>
+        </span>
+        <span class="agent-trace__count">{{ agentSteps.length }} 步</span>
+        <icon-material-symbols:keyboard-arrow-down-rounded
+          class="agent-trace__arrow"
+          :class="{ 'agent-trace__arrow--open': traceExpanded }"
+        />
+      </button>
+
+      <Transition name="trace-fold">
+        <div v-if="traceExpanded" class="agent-trace__body">
+          <div
+            v-for="step in agentSteps"
+            :key="step.stepId"
+            class="agent-step"
+            :class="`agent-step--${step.status}`"
+          >
+            <div class="agent-step__rail">
+              <span class="agent-step__node">
+                <icon-eos-icons:three-dots-loading v-if="step.status === 'running'" />
+                <icon-material-symbols:check-rounded v-else-if="step.status === 'completed'" />
+                <icon-material-symbols:stop-rounded v-else-if="step.status === 'cancelled'" />
+                <icon-material-symbols:priority-high-rounded v-else />
+              </span>
+            </div>
+            <div class="agent-step__content">
+              <div class="agent-step__topline">
+                <span class="agent-step__title">{{ step.title }}</span>
+                <span class="agent-step__status">{{ getAgentStepStatusLabel(step.status) }}</span>
+                <span v-if="getAgentStepDuration(step)" class="agent-step__duration">
+                  {{ getAgentStepDuration(step) }}
+                </span>
+              </div>
+              <div v-if="step.detail" class="agent-step__detail">{{ step.detail }}</div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </div>
+    <div
+      v-else-if="msg.role === 'assistant' && toolEvents.length > 0"
+      class="ml-12 mt-3 flex flex-col gap-2"
+    >
       <div
         v-for="event in toolEvents"
         :key="event.id || event.tool"
@@ -484,5 +577,214 @@ async function handleSourceFileClick(fileInfo: {
 .tool-event--failed {
   border-color: rgb(208 48 80 / 0.25);
   color: #d03050;
+}
+
+.agent-trace {
+  max-width: 680px;
+  overflow: hidden;
+  border: 1px solid rgb(var(--primary-color) / 0.16);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 0 0, rgb(var(--primary-color) / 0.09), transparent 42%),
+    rgb(var(--card-color) / 0.78);
+  box-shadow: 0 8px 28px rgb(15 23 42 / 0.06);
+  backdrop-filter: blur(12px);
+}
+
+.agent-trace__header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  padding: 12px 14px;
+  color: rgb(var(--text-color));
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-trace__mark {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgb(var(--primary-color)), #7c3aed);
+  color: white;
+  box-shadow: 0 5px 14px rgb(var(--primary-color) / 0.24);
+}
+
+.agent-trace__heading {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-trace__eyebrow {
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  letter-spacing: 0.12em;
+  color: rgb(var(--primary-color));
+}
+
+.agent-trace__summary {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-trace__count {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgb(var(--primary-color) / 0.09);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgb(var(--primary-color));
+}
+
+.agent-trace__arrow {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: rgb(var(--text-color-3));
+  transition: transform 0.2s ease;
+}
+
+.agent-trace__arrow--open {
+  transform: rotate(180deg);
+}
+
+.agent-trace__body {
+  border-top: 1px solid rgb(var(--border-color) / 0.12);
+  padding: 10px 14px 12px;
+}
+
+.agent-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 9px;
+  color: rgb(var(--text-color-2));
+}
+
+.agent-step__rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.agent-step:not(:last-child) .agent-step__rail::after {
+  position: absolute;
+  top: 24px;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(rgb(var(--primary-color) / 0.24), rgb(var(--border-color) / 0.16));
+  content: '';
+}
+
+.agent-step__node {
+  z-index: 1;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid rgb(24 160 88 / 0.22);
+  border-radius: 50%;
+  background: rgb(24 160 88 / 0.1);
+  color: #18a058;
+  font-size: 12px;
+}
+
+.agent-step__content {
+  min-width: 0;
+  padding-bottom: 13px;
+}
+
+.agent-step:last-child .agent-step__content {
+  padding-bottom: 1px;
+}
+
+.agent-step__topline {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 7px;
+}
+
+.agent-step__title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(var(--text-color));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-step__status,
+.agent-step__duration {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: rgb(var(--text-color-3));
+}
+
+.agent-step__detail {
+  margin-top: 1px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 17px;
+  color: rgb(var(--text-color-3));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-step--running .agent-step__node {
+  border-color: rgb(var(--primary-color) / 0.28);
+  background: rgb(var(--primary-color) / 0.12);
+  color: rgb(var(--primary-color));
+  box-shadow: 0 0 0 4px rgb(var(--primary-color) / 0.06);
+}
+
+.agent-step--running .agent-step__status {
+  color: rgb(var(--primary-color));
+}
+
+.agent-step--failed .agent-step__node {
+  border-color: rgb(245 158 11 / 0.3);
+  background: rgb(245 158 11 / 0.12);
+  color: #d97706;
+}
+
+.agent-step--cancelled .agent-step__node {
+  border-color: rgb(var(--border-color) / 0.24);
+  background: rgb(var(--border-color) / 0.12);
+  color: rgb(var(--text-color-3));
+}
+
+.trace-fold-enter-active,
+.trace-fold-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  transform-origin: top;
+}
+
+.trace-fold-enter-from,
+.trace-fold-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@media (max-width: 640px) {
+  .agent-trace__count,
+  .agent-step__duration {
+    display: none;
+  }
 }
 </style>

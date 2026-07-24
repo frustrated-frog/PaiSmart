@@ -79,6 +79,9 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
       if (snapshot.referenceMappings && Object.keys(snapshot.referenceMappings).length > 0) {
         assistant.referenceMappings = snapshot.referenceMappings;
       }
+      if (snapshot.agentEvents?.length) {
+        assistant.agentEvents = snapshot.agentEvents;
+      }
       return;
     }
 
@@ -96,7 +99,8 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
       conversationId: snapshot.conversationId,
       generationId: snapshot.generationId,
       timestamp: snapshot.updatedAt,
-      referenceMappings: snapshot.referenceMappings
+      referenceMappings: snapshot.referenceMappings,
+      agentEvents: snapshot.agentEvents || []
     });
   }
 

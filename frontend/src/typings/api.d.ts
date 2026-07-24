@@ -424,6 +424,16 @@ declare namespace Api {
       timestamp?: number;
     }
 
+    interface AgentStepEvent {
+      stepId: string;
+      stage: 'understanding' | 'reasoning' | 'retrieval' | 'synthesis' | 'memory' | 'inspection' | 'tool' | 'finalizing' | 'orchestration' | string;
+      status: 'running' | 'completed' | 'failed' | 'cancelled';
+      title: string;
+      detail?: string;
+      toolName?: string;
+      timestamp: number;
+    }
+
     interface Conversation {
       conversationId: string;
     }
@@ -438,6 +448,7 @@ declare namespace Api {
       username?: string;
       referenceMappings?: Record<string, ReferenceEvidence>;
       toolEvents?: AgentToolEvent[];
+      agentEvents?: AgentStepEvent[];
       feedbackRating?: 'good' | 'bad';
     }
 
@@ -456,6 +467,7 @@ declare namespace Api {
       updatedAt: string;
       errorMessage?: string | null;
       referenceMappings?: Record<string, ReferenceEvidence>;
+      agentEvents?: AgentStepEvent[];
     }
 
     interface ConversationSession {

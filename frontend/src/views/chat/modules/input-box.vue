@@ -106,6 +106,7 @@ function handleCompletionPayload(assistant: Api.Chat.Message, payload: Record<st
     assistant.referenceMappings = payload.referenceMappings;
   }
   markExecutingToolsAsSuccess(assistant);
+  settleRunningAgentSteps(assistant, payload.status === 'failed' ? 'failed' : 'completed');
   stopGenerationStatusMonitor();
 }
 
@@ -114,6 +115,7 @@ function handleStopPayload(assistant: Api.Chat.Message) {
     assistant.status = 'finished';
   }
   markExecutingToolsAsSuccess(assistant);
+  settleRunningAgentSteps(assistant, 'cancelled');
   stopGenerationStatusMonitor();
 }
 
@@ -126,6 +128,7 @@ function handleErrorPayload(assistant: Api.Chat.Message, payload: Record<string,
   assistant.status = 'error';
   assistant.content = message;
   markExecutingToolsAsFailed(assistant);
+  settleRunningAgentSteps(assistant, 'failed');
   stopGenerationStatusMonitor();
 
   if (Number(payload.code) === 429) {
@@ -259,6 +262,48 @@ function handleToolCallPayload(assistant: Api.Chat.Message, payload: Record<stri
   }
 }
 
+function settleRunningAgentSteps(
+  assistant: Api.Chat.Message,
+  status: Extract<Api.Chat.AgentStepEvent['status'], 'completed' | 'failed' | 'cancelled'>
+) {
+  if (!assistant.agentEvents?.length) {
+    return;
+  }
+  assistant.agentEvents = assistant.agentEvents.map(event =>
+    event.status === 'running' ? { ...event, status, timestamp: Date.now() } : event
+  );
+}
+
+function handleAgentStepPayload(assistant: Api.Chat.Message, payload: Record<string, any>) {
+  const stepId = typeof payload.stepId === 'string' ? payload.stepId : '';
+  const status = typeof payload.status === 'string' ? payload.status : '';
+  const title = typeof payload.title === 'string' ? payload.title : '';
+  if (!stepId || !title || !['running', 'completed', 'failed', 'cancelled'].includes(status)) {
+    return;
+  }
+
+  if (['pending', 'loading'].includes(assistant.status || 'pending')) {
+    assistant.status = 'loading';
+  }
+  const event: Api.Chat.AgentStepEvent = {
+    stepId,
+    stage: typeof payload.stage === 'string' ? payload.stage : 'tool',
+    status: status as Api.Chat.AgentStepEvent['status'],
+    title,
+    detail: typeof payload.detail === 'string' ? payload.detail : undefined,
+    toolName: typeof payload.toolName === 'string' ? payload.toolName : undefined,
+    timestamp: Number(payload.timestamp || Date.now())
+  };
+
+  assistant.agentEvents ||= [];
+  const index = assistant.agentEvents.findIndex(item => item.stepId === stepId);
+  if (index >= 0) {
+    assistant.agentEvents = assistant.agentEvents.map((item, itemIndex) => (itemIndex === index ? event : item));
+  } else {
+    assistant.agentEvents = [...assistant.agentEvents, event];
+  }
+}
+
 watch(wsData, val => {
   if (!val) return;
 
@@ -286,6 +331,11 @@ watch(wsData, val => {
 
   if (payload.type === 'tool_call') {
     handleToolCallPayload(assistant, payload);
+    return;
+  }
+
+  if (payload.type === 'agent_step') {
+    handleAgentStepPayload(assistant, payload);
     return;
   }
 
@@ -337,7 +387,8 @@ const handleSend = async () => {
     content: '',
     role: 'assistant',
     status: 'pending',
-    toolEvents: []
+    toolEvents: [],
+    agentEvents: []
   });
   chatStore.wsSend(input.value.message);
   input.value.message = '';
@@ -385,7 +436,7 @@ onUnmounted(() => {
       <textarea
         ref="inputRef"
         v-model.trim="input.message"
-        placeholder="给 派聪明 发送消息，Enter 发送，Shift+Enter 换行"
+        placeholder="给 知枢 发送消息，Enter 发送，Shift+Enter 换行"
         class="max-h-32 min-h-6 w-full flex-1 resize-none border-none bg-transparent py-1 text-14px color-#333 caret-[rgb(var(--primary-color))] outline-none placeholder:text-#bbb dark:color-#e1e1e1 dark:placeholder:text-#555"
         @keydown="handShortcut"
       />
