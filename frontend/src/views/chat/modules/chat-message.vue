@@ -167,6 +167,14 @@ function getRetrievalTrace(step: Api.Chat.AgentStepEvent) {
   return step.metadata?.retrievalTrace;
 }
 
+function getEvidenceAssessment(step: Api.Chat.AgentStepEvent) {
+  return step.metadata?.evidenceAssessment;
+}
+
+function isRetrievalStageWarning(status: string) {
+  return ['DEGRADED', 'FAILED', 'PARTIAL', 'CONFLICTED', 'INSUFFICIENT'].includes(status);
+}
+
 const retrievalStageLabels: Record<string, string> = {
   QUERY_PLANNING: '意图规划',
   PARALLEL_RECALL: '并行召回',
@@ -523,6 +531,9 @@ async function handleSourceFileClick(fileInfo: {
                   </span>
                   <span>{{ getRetrievalTrace(step)?.queryPlan.variants.length }} 路查询</span>
                   <span>{{ getRetrievalTrace(step)?.totalLatencyMs }} ms</span>
+                  <span v-if="getEvidenceAssessment(step)" class="retrieval-trace__badge">
+                    {{ getEvidenceAssessment(step)?.status }}
+                  </span>
                   <span class="font-mono">{{ getRetrievalTrace(step)?.traceId.slice(0, 8) }}</span>
                 </div>
                 <div class="retrieval-trace__queries">
@@ -541,7 +552,10 @@ async function handleSourceFileClick(fileInfo: {
                     :key="stage.name"
                     class="retrieval-stage"
                   >
-                    <span class="retrieval-stage__dot" :class="{ 'retrieval-stage__dot--degraded': stage.status !== 'SUCCEEDED' }" />
+                    <span
+                      class="retrieval-stage__dot"
+                      :class="{ 'retrieval-stage__dot--degraded': isRetrievalStageWarning(stage.status) }"
+                    />
                     <span class="retrieval-stage__name">{{ getRetrievalStageLabel(stage.name) }}</span>
                     <span class="retrieval-stage__count">{{ stage.inputCount }} → {{ stage.outputCount }}</span>
                     <span class="retrieval-stage__latency">{{ stage.latencyMs }} ms</span>

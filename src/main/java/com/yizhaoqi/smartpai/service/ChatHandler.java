@@ -6,7 +6,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
 import com.yizhaoqi.smartpai.model.AgentPendingTask;
+import com.yizhaoqi.smartpai.model.AgentTerminalReason;
 import com.yizhaoqi.smartpai.rag.QueryPlanningService;
+import com.yizhaoqi.smartpai.rag.model.EvidenceAssessment;
 import com.yizhaoqi.smartpai.rag.model.QueryPlan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +22,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -62,6 +65,7 @@ public class ChatHandler {
     private final AgentRunService agentRunService;
     private final AgentPendingTaskService pendingTaskService;
     private final QueryPlanningService queryPlanningService;
+    private final AgentLoopGuard agentLoopGuard;
     private final AgentMemoryService agentMemoryService;
     private final AgentContextBudgetService contextBudgetService;
     private final AgentErrorSanitizer errorSanitizer;
@@ -82,6 +86,7 @@ public class ChatHandler {
     private final Map<String, Map<Integer, ReferenceInfo>> generationReferenceMappings = new ConcurrentHashMap<>();
     // 执行查询可能包含合并后的澄清上下文；会话历史仍只保存用户本轮真实输入。
     private final Map<String, String> generationPersistedUserMessages = new ConcurrentHashMap<>();
+    private final Map<String, AgentTerminalReason> generationTerminalReasons = new ConcurrentHashMap<>();
 
     public ChatHandler(RedisTemplate<String, String> redisTemplate,
                       HybridSearchService searchService,
@@ -94,6 +99,7 @@ public class ChatHandler {
                       AgentRunService agentRunService,
                       AgentPendingTaskService pendingTaskService,
                       QueryPlanningService queryPlanningService,
+                      AgentLoopGuard agentLoopGuard,
                       AgentMemoryService agentMemoryService,
                       AgentContextBudgetService contextBudgetService,
                       AgentErrorSanitizer errorSanitizer,
@@ -110,6 +116,7 @@ public class ChatHandler {
         this.agentRunService = agentRunService;
         this.pendingTaskService = pendingTaskService;
         this.queryPlanningService = queryPlanningService;
+        this.agentLoopGuard = agentLoopGuard;
         this.agentMemoryService = agentMemoryService;
         this.contextBudgetService = contextBudgetService;
         this.errorSanitizer = errorSanitizer;
@@ -297,6 +304,8 @@ public class ChatHandler {
         chatGenerationStateService.markCompleted(generationId, Map.of());
         sendCompletionNotification(userId, generationId, conversationId, false, !persisted);
         generationPersistedUserMessages.remove(generationId);
+        generationTerminalReasons.remove(generationId);
+        agentLoopGuard.clear(generationId);
     }
 
     private String formatClarificationQuestion(String question, List<String> options) {
@@ -350,7 +359,9 @@ public class ChatHandler {
         int executedToolCalls = 0;
         int totalPromptTokens = 0;
         int totalCompletionTokens = 0;
+        AgentTerminalReason forcedTerminalReason = null;
 
+        reactLoop:
         for (int round = 1; round <= MAX_REACT_ROUNDS; round++) {
             if (finishCancelledGeneration(generationId, responseFuture, responseBuilders.get(generationId))) {
                 return;
@@ -392,7 +403,8 @@ public class ChatHandler {
                 if (executedToolCalls >= MAX_REACT_TOOL_CALLS) {
                     executedToolResult = new ExecutedToolResult(
                             "工具调用预算已用尽，本次工具未执行。请基于已有 tool 结果给出最终回答。",
-                            false
+                            false,
+                            AgentTerminalReason.TOOL_BUDGET_EXHAUSTED
                     );
                     sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
                 } else {
@@ -400,6 +412,10 @@ public class ChatHandler {
                     executedToolCalls++;
                 }
                 messages.add(toolMessage(toolCall.id(), executedToolResult.content()));
+                if (executedToolResult.terminalReason() != null) {
+                    forcedTerminalReason = executedToolResult.terminalReason();
+                    generationTerminalReasons.put(generationId, forcedTerminalReason);
+                }
                 if (executedToolResult.streamedToUser()) {
                     finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
                             responseBuilders.get(generationId),
@@ -411,16 +427,25 @@ public class ChatHandler {
                             ));
                     return;
                 }
+                if (forcedTerminalReason != null) {
+                    break reactLoop;
+                }
             }
         }
 
+        if (forcedTerminalReason == null) {
+            forcedTerminalReason = AgentTerminalReason.ROUND_BUDGET_EXHAUSTED;
+            generationTerminalReasons.put(generationId, forcedTerminalReason);
+        }
+        String convergenceInstruction = convergenceInstruction(forcedTerminalReason);
         messages.add(Map.of(
                 "role", "user",
-                "content", "ReAct 轮次预算已用尽，请不要再调用工具，直接基于已有 tool 结果给出最终回答。"
+                "content", convergenceInstruction
         ));
         sendAgentStep(userId, generationId, conversationId,
                 "reasoning-final", "reasoning", "running", "收敛最终结论",
-                "工具轮次已结束，正在基于已有证据生成最终回答", null);
+                "Agent 已停止继续调用工具，正在基于已有证据生成最终回答", null,
+                Map.of("terminalReason", forcedTerminalReason.name()));
         LlmProviderRouter.ReActTurn finalTurn = streamReActTurnBlocking(
                 userId, conversationId, generationId, messages, List.of());
         if (finalTurn == null) {
@@ -442,7 +467,24 @@ public class ChatHandler {
                                                    String generationId,
                                                    String conversationId,
                                                    LlmProviderRouter.ToolCallDecision toolCall) {
+        AgentLoopGuard.ActionDecision actionDecision = agentLoopGuard.beforeAction(
+                generationId,
+                toolCall.name(),
+                toolCall.arguments()
+        );
+        if (actionDecision.disposition() == AgentLoopGuard.Disposition.BLOCK) {
+            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
+            sendLoopGuardStep(userId, generationId, conversationId, toolCall, actionDecision);
+            return new ExecutedToolResult(
+                    actionDecision.message() + "。请基于已有工具结果给出最终回答。",
+                    false,
+                    actionDecision.terminalReason()
+            );
+        }
         sendToolCallStatus(userId, generationId, conversationId, toolCall, "executing");
+        if (actionDecision.disposition() == AgentLoopGuard.Disposition.WARN) {
+            sendLoopGuardStep(userId, generationId, conversationId, toolCall, actionDecision);
+        }
         AtomicBoolean summaryStreamStarted = new AtomicBoolean(false);
         try {
             logger.info("ReAct 执行 Agent Tool: name={}, userId={}, generationId={}, toolCallId={}, argumentKeys={}",
@@ -471,8 +513,20 @@ public class ChatHandler {
             if (content == null || content.isBlank()) {
                 content = "工具 " + toolCall.name() + " 执行成功，但没有返回可展示内容。";
             }
+            if (actionDecision.disposition() == AgentLoopGuard.Disposition.WARN) {
+                content = "[循环守卫提示] " + actionDecision.message() + "\n\n" + content;
+            }
+            String progressSignature = extractProgressSignature(toolResult, toolCall.name(), content);
+            AgentLoopGuard.ProgressDecision progress = agentLoopGuard.observeProgress(generationId, progressSignature);
+            AgentTerminalReason evidenceTerminalReason = evidenceTerminalReason(toolResult);
+            AgentTerminalReason terminalReason = evidenceTerminalReason != null
+                    ? evidenceTerminalReason
+                    : progress.terminalReason();
+            if (progress.terminalReason() != null) {
+                sendProgressGuardStep(userId, generationId, conversationId, toolCall, progress);
+            }
             sendToolCallStatus(userId, generationId, conversationId, toolCall, "success", toolMetadata(toolResult));
-            return new ExecutedToolResult(content, toolResult.streamedToUser());
+            return new ExecutedToolResult(content, toolResult.streamedToUser(), terminalReason);
         } catch (Exception exception) {
             logger.warn("ReAct Agent Tool 执行失败，作为 tool message 返回模型: name={}, generationId={}",
                     toolCall.name(), generationId, exception);
@@ -484,11 +538,100 @@ public class ChatHandler {
                         "\n\n（摘要流式生成中断：" + exception.getMessage() + "）");
                 return new ExecutedToolResult(
                         "工具 " + toolCall.name() + " 已部分流式输出后失败: " + exception.getMessage(),
-                        true
+                        true,
+                        null
                 );
             }
-            return new ExecutedToolResult("工具 " + toolCall.name() + " 执行失败: " + exception.getMessage(), false);
+            String failedContent = "工具 " + toolCall.name() + " 执行失败: " + exception.getMessage();
+            AgentLoopGuard.ProgressDecision progress = agentLoopGuard.observeProgress(
+                    generationId,
+                    agentLoopGuard.observationSignature(toolCall.name(), failedContent)
+            );
+            return new ExecutedToolResult(failedContent, false, progress.terminalReason());
         }
+    }
+
+    private void sendLoopGuardStep(String userId,
+                                   String generationId,
+                                   String conversationId,
+                                   LlmProviderRouter.ToolCallDecision toolCall,
+                                   AgentLoopGuard.ActionDecision decision) {
+        sendAgentStep(userId, generationId, conversationId,
+                "loop-action-" + decision.fingerprint().substring(0, 12),
+                "orchestration",
+                "completed",
+                decision.disposition() == AgentLoopGuard.Disposition.BLOCK ? "已阻止重复工具动作" : "检测到重复工具动作",
+                decision.message(),
+                toolCall.name(),
+                Map.of(
+                        "actionFingerprint", decision.fingerprint(),
+                        "occurrence", decision.occurrence(),
+                        "disposition", decision.disposition().name(),
+                        "terminalReason", decision.terminalReason() == null ? "" : decision.terminalReason().name()
+                ));
+    }
+
+    private void sendProgressGuardStep(String userId,
+                                       String generationId,
+                                       String conversationId,
+                                       LlmProviderRouter.ToolCallDecision toolCall,
+                                       AgentLoopGuard.ProgressDecision progress) {
+        sendAgentStep(userId, generationId, conversationId,
+                "loop-progress-" + progress.stagnantRounds(),
+                "orchestration",
+                "completed",
+                "Agent 连续执行没有产生新进展",
+                progress.message(),
+                toolCall.name(),
+                Map.of(
+                        "stagnantRounds", progress.stagnantRounds(),
+                        "terminalReason", progress.terminalReason().name()
+                ));
+    }
+
+    private String extractProgressSignature(AgentToolRegistry.ToolExecutionResult toolResult,
+                                            String toolName,
+                                            String content) {
+        if (toolResult != null && toolResult.data() != null) {
+            Object assessment = toolResult.data().get("evidenceAssessment");
+            if (assessment instanceof EvidenceAssessment evidenceAssessment
+                    && evidenceAssessment.progressSignature() != null) {
+                return evidenceAssessment.progressSignature();
+            }
+        }
+        return agentLoopGuard.observationSignature(toolName, content);
+    }
+
+    private AgentTerminalReason evidenceTerminalReason(AgentToolRegistry.ToolExecutionResult toolResult) {
+        if (toolResult == null || toolResult.data() == null) {
+            return null;
+        }
+        Object value = toolResult.data().get("evidenceAssessment");
+        if (!(value instanceof EvidenceAssessment assessment)) {
+            return null;
+        }
+        return switch (assessment.suggestedAction()) {
+            case "ABSTAIN" -> AgentTerminalReason.INSUFFICIENT_EVIDENCE;
+            case "PARTIAL_ANSWER" -> AgentTerminalReason.PARTIAL_EVIDENCE;
+            case "ANSWER_WITH_CONFLICTS" -> AgentTerminalReason.CONFLICTED_EVIDENCE;
+            default -> null;
+        };
+    }
+
+    private String convergenceInstruction(AgentTerminalReason reason) {
+        return switch (reason) {
+            case DUPLICATE_ACTION_LIMIT, NO_PROGRESS ->
+                    "检测到重复动作或连续无进展。不要再调用工具；请总结已经确认的事实、仍缺少的证据和停止原因。";
+            case INSUFFICIENT_EVIDENCE ->
+                    "证据补检索后仍不足。不要再调用工具或编造事实；请明确说明无法确认的内容。";
+            case PARTIAL_EVIDENCE ->
+                    "当前只有部分证据。不要再调用工具；请区分已确认结论和仍缺失的信息，并保留引用。";
+            case CONFLICTED_EVIDENCE ->
+                    "检索结果存在冲突。不要静默选择一方；请分别列出冲突结论及其来源。";
+            case TOOL_BUDGET_EXHAUSTED, ROUND_BUDGET_EXHAUSTED, TOKEN_BUDGET_EXHAUSTED ->
+                    "Agent 执行预算已用尽。不要再调用工具，直接基于已有工具结果给出最终回答并说明限制。";
+            default -> "请不要再调用工具，直接基于已有证据给出最终回答。";
+        };
     }
 
     private void replaceReferencesFromSearchTool(String generationId,
@@ -521,7 +664,11 @@ public class ChatHandler {
         logger.info("ReAct search_knowledge 引用映射已刷新: generationId={}, count={}", generationId, mapping.size());
     }
 
-    private record ExecutedToolResult(String content, boolean streamedToUser) {
+    private record ExecutedToolResult(
+            String content,
+            boolean streamedToUser,
+            AgentTerminalReason terminalReason
+    ) {
     }
 
     private Map<String, Object> toolMessage(String toolCallId, String content) {
@@ -699,7 +846,8 @@ public class ChatHandler {
                 generationId,
                 completeResponse,
                 completion != null ? completion.promptTokens() : 0,
-                completion != null ? completion.completionTokens() : 0
+                completion != null ? completion.completionTokens() : 0,
+                generationTerminalReasons.getOrDefault(generationId, AgentTerminalReason.ANSWERED)
         );
         sendCompletionNotification(userId, generationId, conversationId, false, !persisted);
         logger.info("对话存储信息 - Redis键: {}, 值: {}", "user:" + userId + ":current_conversation", conversationId);
@@ -729,6 +877,8 @@ public class ChatHandler {
         responseBuilders.remove(generationId);
         generationReferenceMappings.remove(generationId);
         generationPersistedUserMessages.remove(generationId);
+        generationTerminalReasons.remove(generationId);
+        agentLoopGuard.clear(generationId);
         stopFlags.remove(generationId);
         activeStreams.remove(generationId);
         cancelledGenerations.remove(generationId);
@@ -1088,11 +1238,14 @@ public class ChatHandler {
         if (result == null || result.data() == null) {
             return Map.of();
         }
-        Object retrievalTrace = result.data().get("retrievalTrace");
-        if (retrievalTrace == null) {
-            return Map.of();
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        for (String key : List.of("retrievalTrace", "evidenceAssessment", "refinementRounds")) {
+            Object value = result.data().get(key);
+            if (value != null) {
+                metadata.put(key, value);
+            }
         }
-        return Map.of("retrievalTrace", retrievalTrace);
+        return Map.copyOf(metadata);
     }
 
     private String toolStage(String toolName) {

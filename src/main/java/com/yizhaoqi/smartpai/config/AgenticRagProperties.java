@@ -17,6 +17,7 @@ public class AgenticRagProperties {
     private Evaluation evaluation = new Evaluation();
     private Tools tools = new Tools();
     private Context context = new Context();
+    private LoopGuard loopGuard = new LoopGuard();
 
     @Data
     public static class QueryPlanning {
@@ -77,5 +78,12 @@ public class AgenticRagProperties {
         private int maxPromptChars = 32000;
         private int maxToolObservationChars = 8000;
         private int maxHistoricalMessageChars = 1600;
+    }
+
+    @Data
+    public static class LoopGuard {
+        private int repeatWarningThreshold = 2;
+        private int repeatHardLimit = 3;
+        private int noProgressLimit = 2;
     }
 }

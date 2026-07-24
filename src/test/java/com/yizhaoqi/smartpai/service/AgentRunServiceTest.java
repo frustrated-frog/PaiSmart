@@ -3,6 +3,7 @@ package com.yizhaoqi.smartpai.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.model.AgentRun;
 import com.yizhaoqi.smartpai.model.AgentStep;
+import com.yizhaoqi.smartpai.model.AgentTerminalReason;
 import com.yizhaoqi.smartpai.repository.AgentCheckpointRepository;
 import com.yizhaoqi.smartpai.repository.AgentRunRepository;
 import com.yizhaoqi.smartpai.repository.AgentStepRepository;
@@ -164,6 +165,19 @@ class AgentRunServiceTest {
         assertThat(metrics.retryRecoveryRate()).isEqualTo(1D);
         assertThat(metrics.promptTokens()).isEqualTo(100);
         assertThat(metrics.failureStages()).containsEntry("reasoning", 1L);
+    }
+
+    @Test
+    void shouldPersistMachineReadableTerminalReason() {
+        AgentRun run = run("run-terminal", "7", "RUNNING");
+        when(runRepository.findById("run-terminal")).thenReturn(Optional.of(run));
+        when(stepRepository.findByGenerationIdOrderByIdAsc("run-terminal")).thenReturn(List.of());
+
+        service.complete("run-terminal", "部分回答", 10, 5, AgentTerminalReason.PARTIAL_EVIDENCE);
+
+        assertThat(run.getStatus()).isEqualTo("COMPLETED");
+        assertThat(run.getTerminalReason()).isEqualTo("PARTIAL_EVIDENCE");
+        verify(checkpointRepository).save(any());
     }
 
     private AgentRun run(String generationId, String userId, String status) {

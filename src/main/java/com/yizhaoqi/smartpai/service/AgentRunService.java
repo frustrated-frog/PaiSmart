@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.model.AgentCheckpoint;
 import com.yizhaoqi.smartpai.model.AgentRun;
 import com.yizhaoqi.smartpai.model.AgentStep;
+import com.yizhaoqi.smartpai.model.AgentTerminalReason;
 import com.yizhaoqi.smartpai.repository.AgentCheckpointRepository;
 import com.yizhaoqi.smartpai.repository.AgentRunRepository;
 import com.yizhaoqi.smartpai.repository.AgentStepRepository;
@@ -103,6 +104,7 @@ public class AgentRunService {
         runRepository.findById(generationId).ifPresent(run -> {
             run.setStatus("WAITING_CLARIFICATION");
             run.setCurrentStage("clarification");
+            run.setTerminalReason(AgentTerminalReason.WAITING_CLARIFICATION.name());
             run.setUpdatedAt(LocalDateTime.now());
             runRepository.save(run);
             checkpoint(generationId, "WAITING_CLARIFICATION", Map.of(
@@ -186,17 +188,27 @@ public class AgentRunService {
 
     @Transactional
     public void complete(String generationId, String answer, int promptTokens, int completionTokens) {
-        updateTerminal(generationId, "COMPLETED", answer, null, promptTokens, completionTokens);
+        complete(generationId, answer, promptTokens, completionTokens, AgentTerminalReason.ANSWERED);
+    }
+
+    @Transactional
+    public void complete(String generationId,
+                         String answer,
+                         int promptTokens,
+                         int completionTokens,
+                         AgentTerminalReason terminalReason) {
+        updateTerminal(generationId, "COMPLETED", answer, null, promptTokens, completionTokens,
+                terminalReason == null ? AgentTerminalReason.ANSWERED : terminalReason);
     }
 
     @Transactional
     public void fail(String generationId, String error) {
-        updateTerminal(generationId, "FAILED", null, error, 0, 0);
+        updateTerminal(generationId, "FAILED", null, error, 0, 0, AgentTerminalReason.FATAL_FAILURE);
     }
 
     @Transactional
     public void cancel(String generationId) {
-        updateTerminal(generationId, "CANCELLED", null, null, 0, 0);
+        updateTerminal(generationId, "CANCELLED", null, null, 0, 0, AgentTerminalReason.USER_CANCELLED);
     }
 
     @Transactional(readOnly = true)
@@ -332,6 +344,7 @@ public class AgentRunService {
         LocalDateTime now = LocalDateTime.now();
         for (AgentRun run : interrupted) {
             run.setStatus("INTERRUPTED");
+            run.setTerminalReason(AgentTerminalReason.RETRYABLE_FAILURE.name());
             run.setErrorMessage("服务进程重启，运行已安全中断，可依据 checkpoint 重试");
             run.setUpdatedAt(now);
             run.setFinishedAt(now);
@@ -349,12 +362,14 @@ public class AgentRunService {
                                 String answer,
                                 String error,
                                 int promptTokens,
-                                int completionTokens) {
+                                int completionTokens,
+                                AgentTerminalReason terminalReason) {
         runRepository.findById(generationId).ifPresent(run -> {
             closeOpenSteps(generationId, status);
             run.setStatus(status);
             run.setAnswer(answer);
             run.setErrorMessage(error);
+            run.setTerminalReason(terminalReason.name());
             run.setPromptTokens(promptTokens);
             run.setCompletionTokens(completionTokens);
             run.setUpdatedAt(LocalDateTime.now());
@@ -363,7 +378,8 @@ public class AgentRunService {
             checkpoint(generationId, "RUN_" + status, Map.of(
                     "status", status,
                     "answerChars", answer == null ? 0 : answer.length(),
-                    "error", error == null ? "" : error
+                    "error", error == null ? "" : error,
+                    "terminalReason", terminalReason.name()
             ));
         });
     }

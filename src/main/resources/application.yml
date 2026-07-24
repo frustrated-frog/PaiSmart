@@ -280,6 +280,10 @@ agentic-rag:
     max-prompt-chars: ${AGENT_CONTEXT_MAX_PROMPT_CHARS:32000}
     max-tool-observation-chars: ${AGENT_CONTEXT_MAX_TOOL_OBSERVATION_CHARS:8000}
     max-historical-message-chars: ${AGENT_CONTEXT_MAX_HISTORICAL_MESSAGE_CHARS:1600}
+  loop-guard:
+    repeat-warning-threshold: ${AGENT_LOOP_REPEAT_WARNING_THRESHOLD:2}
+    repeat-hard-limit: ${AGENT_LOOP_REPEAT_HARD_LIMIT:3}
+    no-progress-limit: ${AGENT_LOOP_NO_PROGRESS_LIMIT:2}
 
 # 微信支付相关配置
 wx:

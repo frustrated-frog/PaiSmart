@@ -440,6 +440,18 @@ declare namespace Api {
         missingSlots?: string[];
         options?: string[];
         resolvedSlots?: Record<string, string>;
+        refinementRounds?: number;
+        evidenceAssessment?: {
+          status: 'SUFFICIENT' | 'PARTIAL' | 'CONFLICTED' | 'INSUFFICIENT';
+          confidence: number;
+          coveredAspects: string[];
+          missingAspects: string[];
+          conflicts: string[];
+          progressSignature: string;
+          suggestedAction: string;
+          assessmentMode: string;
+          refinementRound: number;
+        };
         retrievalTrace?: {
           traceId: string;
           queryPlan: {
