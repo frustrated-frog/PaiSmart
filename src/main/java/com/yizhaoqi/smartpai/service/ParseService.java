@@ -2,6 +2,8 @@ package com.yizhaoqi.smartpai.service;
 
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.model.DocumentParentChunk;
+import com.yizhaoqi.smartpai.repository.DocumentParentChunkRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.tika.exception.TikaException;
@@ -40,6 +42,9 @@ public class ParseService {
     private DocumentVectorRepository documentVectorRepository;
 
     @Autowired
+    private DocumentParentChunkRepository documentParentChunkRepository;
+
+    @Autowired
     private UsageQuotaService usageQuotaService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -55,6 +60,9 @@ public class ParseService {
 
     @Value("${file.parsing.parent-chunk-size:1048576}")
     private int parentChunkSize;
+
+    @Value("${file.parsing.parent-child-group-size:3}")
+    private int parentChildGroupSize;
     
     @Value("${file.parsing.buffer-size:8192}")
     private int bufferSize;
@@ -306,21 +314,55 @@ public class ParseService {
     private int saveChildChunks(String fileMd5, List<String> chunks,
             String userId, String orgTag, boolean isPublic, int startingChunkId, Integer pageNumber) {
         int currentChunkId = startingChunkId;
-        for (String chunk : chunks) {
-            currentChunkId++;
-            var vector = new DocumentVector();
-            vector.setFileMd5(fileMd5);
-            vector.setChunkId(currentChunkId);
-            vector.setTextContent(chunk);
-            vector.setPageNumber(pageNumber);
-            vector.setAnchorText(buildAnchorText(chunk));
-            vector.setUserId(userId);
-            vector.setOrgTag(orgTag);
-            vector.setPublic(isPublic);
-            documentVectorRepository.save(vector);
+        int groupSize = Math.max(1, parentChildGroupSize);
+        for (int offset = 0; offset < chunks.size(); offset += groupSize) {
+            List<String> group = chunks.subList(offset, Math.min(chunks.size(), offset + groupSize));
+            String parentText = String.join("\n", group);
+            int parentIndex = currentChunkId + 1;
+
+            DocumentParentChunk parent = new DocumentParentChunk();
+            parent.setFileMd5(fileMd5);
+            parent.setParentIndex(parentIndex);
+            parent.setTextContent(parentText);
+            parent.setPageNumber(pageNumber);
+            parent.setAnchorText(buildAnchorText(parentText));
+            parent.setUserId(userId);
+            parent.setOrgTag(orgTag);
+            parent.setPublic(isPublic);
+            parent = documentParentChunkRepository.save(parent);
+
+            for (String chunk : group) {
+                currentChunkId++;
+                var vector = new DocumentVector();
+                vector.setFileMd5(fileMd5);
+                vector.setChunkId(currentChunkId);
+                vector.setParentChunkId(parent.getId());
+                vector.setParentChunkIndex(parentIndex);
+                vector.setTextContent(chunk);
+                vector.setContextualText(buildContextualText(parentText, chunk, pageNumber));
+                vector.setPageNumber(pageNumber);
+                vector.setAnchorText(buildAnchorText(chunk));
+                vector.setUserId(userId);
+                vector.setOrgTag(orgTag);
+                vector.setPublic(isPublic);
+                documentVectorRepository.save(vector);
+            }
         }
-        logger.info("成功保存 {} 个子切片到数据库", chunks.size());
+        logger.info("成功保存 {} 个子切片及其父上下文到数据库", chunks.size());
         return currentChunkId;
+    }
+
+    private String buildContextualText(String parentText, String childText, Integer pageNumber) {
+        StringBuilder context = new StringBuilder();
+        if (pageNumber != null) {
+            context.append("文档第").append(pageNumber).append("页。\n");
+        }
+        String anchor = buildAnchorText(parentText);
+        if (anchor != null && !anchor.isBlank()) {
+            context.append("上下文主题：").append(anchor).append("\n");
+        }
+        context.append(childText);
+        return context.toString();
     }
 
     private void parsePdfAndSave(String fileMd5, InputStream fileStream, String userId, String orgTag, boolean isPublic) throws IOException {

@@ -5,6 +5,7 @@ import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.repository.DocumentParentChunkRepository;
 import com.yizhaoqi.smartpai.repository.ChunkInfoRepository;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.repository.UserRepository;
@@ -62,6 +63,9 @@ public class DocumentService {
 
     @Autowired
     private DocumentVectorRepository documentVectorRepository;
+
+    @Autowired
+    private DocumentParentChunkRepository documentParentChunkRepository;
 
     @Autowired
     private ChunkInfoRepository chunkInfoRepository;
@@ -157,6 +161,7 @@ public class DocumentService {
             // 3. 删除DocumentVector记录
             try {
                 documentVectorRepository.deleteByFileMd5(fileMd5);
+                documentParentChunkRepository.deleteByFileMd5(fileMd5);
                 logger.info("成功删除文档向量记录: {}", fileMd5);
             } catch (Exception e) {
                 logger.error("删除文档向量记录时出错: {}", fileMd5, e);
@@ -201,6 +206,7 @@ public class DocumentService {
             }
 
             documentVectorRepository.deleteByFileMd5(fileMd5);
+            documentParentChunkRepository.deleteByFileMd5(fileMd5);
             invalidatePdfSinglePagePreviewCache(fileMd5);
 
             parseService.parseAndSave(

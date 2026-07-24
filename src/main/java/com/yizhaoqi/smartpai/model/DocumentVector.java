@@ -23,8 +23,18 @@ public class DocumentVector {
     @Column(nullable = false)
     private Integer chunkId;
 
+    @Column(name = "parent_chunk_id")
+    private Long parentChunkId;
+
+    @Column(name = "parent_chunk_index")
+    private Integer parentChunkIndex;
+
     @Lob
     private String textContent;
+
+    @Lob
+    @Column(name = "contextual_text")
+    private String contextualText;
 
     @Column(name = "page_number")
     private Integer pageNumber;

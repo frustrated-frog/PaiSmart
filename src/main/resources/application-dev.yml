@@ -114,6 +114,7 @@ file:
     chunk-size: 512
     overlap-size: 100
     min-chunk-size: 100
+    parent-child-group-size: ${FILE_PARSING_PARENT_CHILD_GROUP_SIZE:3}
     pdf:
       engine: ${FILE_PARSING_PDF_ENGINE:liteparse}
     liteparse:

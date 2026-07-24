@@ -62,105 +62,17 @@ public class HybridSearchService {
      */
     public List<SearchResult> searchWithPermission(String query, String userId, int topK) {
         logger.debug("开始带权限搜索，查询: {}, 用户ID: {}", query, userId);
-        
         try {
-            // 获取用户有效的组织标签（包含层级关系）
-            List<String> userEffectiveTags = getUserEffectiveOrgTags(userId);
-            logger.debug("用户 {} 的有效组织标签: {}", userId, userEffectiveTags);
-
-            // 获取用户的数据库ID用于权限过滤
-            String userDbId = getUserDbId(userId);
-            logger.debug("用户 {} 的数据库ID: {}", userId, userDbId);
-
-            // 生成查询向量
-            final List<Float> queryVector = embedToVectorList(query, userId);
-
-            // 如果向量生成失败，仅使用文本匹配
-            if (queryVector == null) {
-                logger.warn("向量生成失败，仅使用文本匹配进行搜索");
-                return textOnlySearchWithPermission(query, userDbId, userEffectiveTags, topK);
+            int recallK = Math.max(topK * 4, topK);
+            List<SearchResult> bm25Results = searchBm25WithPermission(query, userId, recallK);
+            List<SearchResult> vectorResults;
+            try {
+                vectorResults = searchVectorWithPermission(query, userId, recallK);
+            } catch (Exception vectorError) {
+                logger.warn("向量召回失败，降级到 BM25: {}", vectorError.getMessage());
+                return bm25Results.stream().limit(topK).toList();
             }
-
-            logger.debug("向量生成成功，开始执行混合搜索 KNN");
-
-            SearchResponse<EsDocument> response = esClient.search(s -> {
-                        s.index("knowledge_base");
-                        // KNN 召回
-                        int recallK = topK * 30; // KNN 召回窗口
-                        s.knn(kn -> kn
-                                .field("vector")
-                                .queryVector(queryVector)
-                                .k(recallK)
-                                .numCandidates(recallK)
-                        );
-                        // 必须命中关键词 + 权限过滤
-                        s.query(q -> q.bool(b -> b
-                                .must(mst -> mst.match(m -> m.field("textContent").query(query)))
-                                .filter(f -> f.bool(bf -> bf
-                                        // 条件1: 用户可访问自己的文档
-                                        .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
-                                        // 条件2: 公开文档
-                                        .should(s2 -> s2.term(t -> t.field("public").value(true)))
-                                        // 条件3: 组织标签
-                                        .should(s3 -> {
-                                            if (userEffectiveTags.isEmpty()) {
-                                                return s3.matchNone(mn -> mn);
-                                            } else if (userEffectiveTags.size() == 1) {
-                                                return s3.term(t -> t.field("orgTag").value(userEffectiveTags.get(0)));
-                                            } else {
-                                                return s3.bool(inner -> {
-                                                    userEffectiveTags.forEach(tag -> inner.should(sh2 -> sh2.term(t -> t.field("orgTag").value(tag))));
-                                                    return inner;
-                                                });
-                                            }
-                                        })
-                                ))
-                        ));
-
-                        // 第二阶段 BM25 rescore
-                        s.rescore(r -> r
-                                .windowSize(recallK)
-                                .query(rq -> rq
-                                        .queryWeight(0.2d)               // 保留部分 KNN 分
-                                        .rescoreQueryWeight(1.0d)        // BM25 主导
-                                        .query(rqq -> rqq.match(m -> m
-                                                .field("textContent")
-                                                .query(query)
-                                                .operator(Operator.And)
-                                        ))
-                                )
-                        );
-                        s.size(topK);
-                        return s;
-                    }, EsDocument.class);
-
-            logger.debug("Elasticsearch查询执行完成，命中数量: {}, 最大分数: {}", 
-                response.hits().total().value(), response.hits().maxScore());
-
-            List<SearchResult> results = response.hits().hits().stream()
-                    .map(hit -> {
-                        assert hit.source() != null;
-                        logger.debug("搜索结果 - 文件: {}, 块: {}, 分数: {}, 内容: {}", 
-                            hit.source().getFileMd5(), hit.source().getChunkId(), hit.score(), 
-                            hit.source().getTextContent().substring(0, Math.min(50, hit.source().getTextContent().length())));
-                        return new SearchResult(
-                                hit.source().getFileMd5(),
-                                hit.source().getChunkId(),
-                                hit.source().getTextContent(),
-                                hit.score(),
-                                hit.source().getUserId(),
-                                hit.source().getOrgTag(),
-                                hit.source().isPublic(),
-                                null,
-                                hit.source().getPageNumber(),
-                                hit.source().getAnchorText(),
-                                "HYBRID",
-                                hit.source().getTextContent()
-                        );
-                    })
-                    .toList();
-
-            logger.debug("返回搜索结果数量: {}", results.size());
+            List<SearchResult> results = ReciprocalRankFusion.fuse(vectorResults, bm25Results, topK);
             attachFileNames(results);
             return results;
         } catch (Exception e) {
@@ -174,6 +86,90 @@ public class HybridSearchService {
                 return Collections.emptyList();
             }
         }
+    }
+
+    /**
+     * 独立 BM25 召回。该方法与向量召回使用相同权限过滤，便于 RRF 融合和消融实验。
+     */
+    public List<SearchResult> searchBm25WithPermission(String query, String userId, int topK) {
+        return textOnlySearchWithPermission(query, getUserDbId(userId), getUserEffectiveOrgTags(userId), topK);
+    }
+
+    /**
+     * 独立向量召回。查询中不再包含关键词 must，避免语义候选被词法条件提前截断。
+     */
+    public List<SearchResult> searchVectorWithPermission(String query, String userId, int topK) {
+        List<String> userEffectiveTags = getUserEffectiveOrgTags(userId);
+        String userDbId = getUserDbId(userId);
+        List<Float> queryVector = embedToVectorList(query, userId);
+        if (queryVector == null) {
+            throw new IllegalStateException("QUERY_EMBEDDING_UNAVAILABLE");
+        }
+
+        try {
+            int numCandidates = Math.max(topK * 4, 100);
+            SearchResponse<EsDocument> response = esClient.search(s -> {
+                        s.index("knowledge_base");
+                        s.knn(kn -> kn
+                                .field("vector")
+                                .queryVector(queryVector)
+                                .k(topK)
+                                .numCandidates(numCandidates)
+                        );
+                        s.query(q -> q.bool(b -> b
+                                .filter(f -> f.bool(bf -> bf
+                                        .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
+                                        .should(s2 -> s2.term(t -> t.field("public").value(true)))
+                                        .should(s3 -> {
+                                            if (userEffectiveTags.isEmpty()) {
+                                                return s3.matchNone(mn -> mn);
+                                            } else if (userEffectiveTags.size() == 1) {
+                                                return s3.term(t -> t.field("orgTag").value(userEffectiveTags.get(0)));
+                                            }
+                                            return s3.bool(inner -> {
+                                                userEffectiveTags.forEach(tag -> inner.should(sh -> sh.term(t -> t.field("orgTag").value(tag))));
+                                                return inner;
+                                            });
+                                        })
+                                        .minimumShouldMatch("1")
+                                ))
+                        ));
+                        s.size(topK);
+                        return s;
+                    }, EsDocument.class);
+
+            List<SearchResult> results = response.hits().hits().stream()
+                    .map(hit -> toSearchResult(hit.source(), hit.score(), "VECTOR"))
+                    .filter(java.util.Objects::nonNull)
+                    .toList();
+            attachFileNames(results);
+            return results;
+        } catch (Exception exception) {
+            throw new RuntimeException("向量召回失败", exception);
+        }
+    }
+
+    private SearchResult toSearchResult(EsDocument source, Double score, String mode) {
+        if (source == null) {
+            return null;
+        }
+        SearchResult result = new SearchResult(
+                source.getFileMd5(),
+                source.getChunkId(),
+                source.getTextContent(),
+                score,
+                source.getUserId(),
+                source.getOrgTag(),
+                source.isPublic(),
+                null,
+                source.getPageNumber(),
+                source.getAnchorText(),
+                mode,
+                source.getTextContent()
+        );
+        result.setParentChunkId(source.getParentChunkId());
+        result.setParentChunkIndex(source.getParentChunkIndex());
+        return result;
     }
 
     /**
@@ -252,20 +248,7 @@ public class HybridSearchService {
                         logger.debug("纯文本搜索结果 - 文件: {}, 块: {}, 分数: {}, 内容: {}", 
                             hit.source().getFileMd5(), hit.source().getChunkId(), hit.score(), 
                             hit.source().getTextContent().substring(0, Math.min(50, hit.source().getTextContent().length())));
-                        return new SearchResult(
-                                hit.source().getFileMd5(),
-                                hit.source().getChunkId(),
-                                hit.source().getTextContent(),
-                                hit.score(),
-                                hit.source().getUserId(),
-                                hit.source().getOrgTag(),
-                                hit.source().isPublic(),
-                                null,
-                                hit.source().getPageNumber(),
-                                hit.source().getAnchorText(),
-                                "TEXT_ONLY",
-                                hit.source().getTextContent()
-                        );
+                        return toSearchResult(hit.source(), hit.score(), "TEXT_ONLY");
                     })
                     .toList();
 
@@ -328,20 +311,7 @@ public class HybridSearchService {
             return response.hits().hits().stream()
                     .map(hit -> {
                         assert hit.source() != null;
-                        return new SearchResult(
-                                hit.source().getFileMd5(),
-                                hit.source().getChunkId(),
-                                hit.source().getTextContent(),
-                                hit.score(),
-                                null,
-                                null,
-                                false,
-                                null,
-                                hit.source().getPageNumber(),
-                                hit.source().getAnchorText(),
-                                "HYBRID",
-                                hit.source().getTextContent()
-                        );
+                        return toSearchResult(hit.source(), hit.score(), "HYBRID");
                     })
                     .toList();
         } catch (Exception e) {
@@ -376,20 +346,7 @@ public class HybridSearchService {
         return response.hits().hits().stream()
                 .map(hit -> {
                     assert hit.source() != null;
-                    return new SearchResult(
-                            hit.source().getFileMd5(),
-                            hit.source().getChunkId(),
-                            hit.source().getTextContent(),
-                            hit.score(),
-                            null,
-                            null,
-                            false,
-                            null,
-                            hit.source().getPageNumber(),
-                            hit.source().getAnchorText(),
-                            "TEXT_ONLY",
-                            hit.source().getTextContent()
-                    );
+                    return toSearchResult(hit.source(), hit.score(), "TEXT_ONLY");
                 })
                 .toList();
     }

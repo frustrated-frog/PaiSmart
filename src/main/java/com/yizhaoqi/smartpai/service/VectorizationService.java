@@ -58,7 +58,9 @@ public class VectorizationService {
 
             // 提取文本内容
             List<String> texts = chunks.stream()
-                    .map(TextChunk::getContent)
+                    .map(chunk -> chunk.getContextualText() == null || chunk.getContextualText().isBlank()
+                            ? chunk.getContent()
+                            : chunk.getContextualText())
                     .toList();
 
             // 调用外部模型生成向量
@@ -75,7 +77,10 @@ public class VectorizationService {
                             UUID.randomUUID().toString(),
                             fileMd5,
                             chunks.get(i).getChunkId(),
+                            chunks.get(i).getParentChunkId(),
+                            chunks.get(i).getParentChunkIndex(),
                             chunks.get(i).getContent(),
+                            chunks.get(i).getContextualText(),
                             chunks.get(i).getPageNumber(),
                             chunks.get(i).getAnchorText(),
                             vectors.get(i),
@@ -121,7 +126,10 @@ public class VectorizationService {
                         vector.getChunkId(),
                         vector.getTextContent(),
                         vector.getPageNumber(),
-                        vector.getAnchorText()
+                        vector.getAnchorText(),
+                        vector.getParentChunkId(),
+                        vector.getParentChunkIndex(),
+                        vector.getContextualText()
                 ))
                 .toList();
     }

@@ -9,6 +9,8 @@ import com.yizhaoqi.smartpai.client.DeepSeekClient;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
+import com.yizhaoqi.smartpai.rag.AgenticRetrievalService;
+import com.yizhaoqi.smartpai.rag.model.RetrievalOutcome;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -28,7 +30,7 @@ public class AgentToolRegistry {
     private static final int DEFAULT_TOP_K = 5;
     private static final int MAX_SEARCH_DOCS = 20;
 
-    private final HybridSearchService hybridSearchService;
+    private final AgenticRetrievalService agenticRetrievalService;
     private final DeepSeekClient deepSeekClient;
     private final StringRedisTemplate stringRedisTemplate;
     private final ElasticsearchClient elasticsearchClient;
@@ -36,12 +38,12 @@ public class AgentToolRegistry {
     private final List<AgentTool> tools;
     private final Map<String, ToolHandler> handlers;
 
-    public AgentToolRegistry(HybridSearchService hybridSearchService,
+    public AgentToolRegistry(AgenticRetrievalService agenticRetrievalService,
                              DeepSeekClient deepSeekClient,
                              StringRedisTemplate stringRedisTemplate,
                              ElasticsearchClient elasticsearchClient,
                              FileUploadRepository fileUploadRepository) {
-        this.hybridSearchService = hybridSearchService;
+        this.agenticRetrievalService = agenticRetrievalService;
         this.deepSeekClient = deepSeekClient;
         this.stringRedisTemplate = stringRedisTemplate;
         this.elasticsearchClient = elasticsearchClient;
@@ -92,11 +94,13 @@ public class AgentToolRegistry {
         String query = getRequiredString(arguments, "query");
         int topK = getInt(arguments, "topK", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
 
-        List<SearchResult> results = hybridSearchService.searchWithPermission(query, userId, topK);
+        RetrievalOutcome outcome = agenticRetrievalService.retrieve(query, userId, topK);
+        List<SearchResult> results = outcome.results();
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("query", query);
         data.put("topK", topK);
         data.put("results", results);
+        data.put("retrievalTrace", outcome.trace());
         return new ToolExecutionResult("search_knowledge", true, formatSearchResults(results), data);
     }
 
@@ -107,13 +111,15 @@ public class AgentToolRegistry {
         String topic = getRequiredString(arguments, "topic");
         int maxDocs = getInt(arguments, "maxDocs", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
 
-        List<SearchResult> results = hybridSearchService.searchWithPermission(topic, userId, maxDocs);
+        RetrievalOutcome retrievalOutcome = agenticRetrievalService.retrieve(topic, userId, maxDocs);
+        List<SearchResult> results = retrievalOutcome.results();
         String summary = deepSeekClient.summarize(userId, topic, results, onChunk);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("topic", topic);
         data.put("maxDocs", maxDocs);
         data.put("sourceCount", results.size());
         data.put("sources", results);
+        data.put("retrievalTrace", retrievalOutcome.trace());
 
         String content = "主题：" + topic + "\n"
                 + "检索片段数：" + results.size() + "\n\n"

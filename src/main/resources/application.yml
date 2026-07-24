@@ -135,6 +135,7 @@ file:
     chunk-size: 512
     overlap-size: 100
     min-chunk-size: 100
+    parent-child-group-size: ${FILE_PARSING_PARENT_CHILD_GROUP_SIZE:3}
     buffer-size: 8192
     max-memory-threshold: 0.8
     pdf:
@@ -236,6 +237,26 @@ ai:
     temperature: ${AI_GENERATION_TEMPERATURE:0.3}
     max-tokens: ${AI_GENERATION_MAX_TOKENS:2000}
     top-p: ${AI_GENERATION_TOP_P:0.9}
+
+agentic-rag:
+  enabled: ${AGENTIC_RAG_ENABLED:true}
+  query-planning:
+    llm-enabled: ${AGENTIC_RAG_QUERY_PLANNING_LLM_ENABLED:true}
+    max-variants: ${AGENTIC_RAG_MAX_QUERY_VARIANTS:4}
+    max-completion-tokens: ${AGENTIC_RAG_QUERY_PLANNING_MAX_TOKENS:600}
+  retrieval:
+    per-channel-top-k: ${AGENTIC_RAG_PER_CHANNEL_TOP_K:30}
+    fusion-top-k: ${AGENTIC_RAG_FUSION_TOP_K:40}
+    final-top-k: ${AGENTIC_RAG_FINAL_TOP_K:8}
+    rrf-rank-constant: ${AGENTIC_RAG_RRF_RANK_CONSTANT:60}
+    max-query-variants: ${AGENTIC_RAG_MAX_QUERY_VARIANTS:4}
+  reranker:
+    enabled: ${AGENTIC_RAG_RERANKER_ENABLED:true}
+    endpoint: ${AGENTIC_RAG_RERANKER_ENDPOINT:}
+    api-key: ${AGENTIC_RAG_RERANKER_API_KEY:}
+    model: ${AGENTIC_RAG_RERANKER_MODEL:bge-reranker-v2-m3}
+    timeout-seconds: ${AGENTIC_RAG_RERANKER_TIMEOUT_SECONDS:12}
+    max-documents: ${AGENTIC_RAG_RERANKER_MAX_DOCUMENTS:40}
 
 # 微信支付相关配置
 wx:
