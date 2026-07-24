@@ -59,6 +59,7 @@ public class ChatHandler {
     private final AgentRunService agentRunService;
     private final AgentMemoryService agentMemoryService;
     private final AgentContextBudgetService contextBudgetService;
+    private final AgentErrorSanitizer errorSanitizer;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
     
@@ -86,6 +87,7 @@ public class ChatHandler {
                       AgentRunService agentRunService,
                       AgentMemoryService agentMemoryService,
                       AgentContextBudgetService contextBudgetService,
+                      AgentErrorSanitizer errorSanitizer,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
         this.redisTemplate = redisTemplate;
@@ -99,6 +101,7 @@ public class ChatHandler {
         this.agentRunService = agentRunService;
         this.agentMemoryService = agentMemoryService;
         this.contextBudgetService = contextBudgetService;
+        this.errorSanitizer = errorSanitizer;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
     }
@@ -983,11 +986,7 @@ public class ChatHandler {
     }
 
     private String safeErrorMessage(Throwable error) {
-        if (error == null || error.getMessage() == null || error.getMessage().isBlank()) {
-            return "Agent 执行失败";
-        }
-        String message = error.getMessage().trim();
-        return message.length() <= 160 ? message : message.substring(0, 160) + "...";
+        return errorSanitizer.auditMessage(error);
     }
 
     private void sendCompletionNotification(String userId,
@@ -1026,33 +1025,13 @@ public class ChatHandler {
     }
 
     private String userFacingError(Throwable error) {
-        String message = rootErrorMessage(error).toLowerCase(java.util.Locale.ROOT);
-        if (message.contains("401") || message.contains("unauthorized") || message.contains("authentication fails")) {
-            return "模型服务认证失败，请在「模型配置」中更新 API Key 或启用备用模型";
-        }
-        if (message.contains("429") || message.contains("too many requests")) {
-            return "模型服务当前限流，请稍后重试或切换备用模型";
-        }
-        if (message.contains("timeout") || message.contains("超时")) {
-            return "模型服务响应超时，Agent 已安全中断，请稍后重试";
-        }
-        return "AI 服务暂时不可用，Agent 运行记录已保留";
-    }
-
-    private String rootErrorMessage(Throwable error) {
-        if (error == null) {
-            return "";
-        }
-        Throwable current = error;
-        while (current.getCause() != null) {
-            current = current.getCause();
-        }
-        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+        return errorSanitizer.userMessage(error);
     }
 
     private void markFailedGeneration(String generationId, String errorMessage) {
-        chatGenerationStateService.markFailed(generationId, errorMessage);
-        agentRunService.fail(generationId, errorMessage);
+        String auditMessage = errorSanitizer.auditMessage(errorMessage);
+        chatGenerationStateService.markFailed(generationId, auditMessage);
+        agentRunService.fail(generationId, auditMessage);
     }
 
     private void sendRateLimitMessage(String userId, String generationId, RateLimitExceededException exception) {
