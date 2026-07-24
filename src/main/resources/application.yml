@@ -257,6 +257,14 @@ agentic-rag:
     model: ${AGENTIC_RAG_RERANKER_MODEL:bge-reranker-v2-m3}
     timeout-seconds: ${AGENTIC_RAG_RERANKER_TIMEOUT_SECONDS:12}
     max-documents: ${AGENTIC_RAG_RERANKER_MAX_DOCUMENTS:40}
+  evidence:
+    enabled: ${AGENTIC_RAG_EVIDENCE_ENABLED:true}
+    min-result-count: ${AGENTIC_RAG_EVIDENCE_MIN_RESULTS:2}
+    query-coverage-threshold: ${AGENTIC_RAG_EVIDENCE_QUERY_COVERAGE:0.25}
+    aspect-coverage-threshold: ${AGENTIC_RAG_EVIDENCE_ASPECT_COVERAGE:0.5}
+    complex-aspect-coverage-threshold: ${AGENTIC_RAG_EVIDENCE_COMPLEX_COVERAGE:0.75}
+    max-refinement-rounds: ${AGENTIC_RAG_EVIDENCE_MAX_REFINEMENT_ROUNDS:2}
+    max-refinement-queries: ${AGENTIC_RAG_EVIDENCE_MAX_REFINEMENT_QUERIES:3}
   evaluation:
     min-recall-at-k: ${AGENTIC_RAG_EVAL_MIN_RECALL_AT_K:0.75}
     min-mrr: ${AGENTIC_RAG_EVAL_MIN_MRR:0.60}

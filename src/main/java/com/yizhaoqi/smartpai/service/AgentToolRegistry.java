@@ -122,7 +122,10 @@ public class AgentToolRegistry {
         data.put("topK", topK);
         data.put("results", results);
         data.put("retrievalTrace", outcome.trace());
-        return new ToolExecutionResult("search_knowledge", true, formatSearchResults(results), data);
+        data.put("evidenceAssessment", outcome.evidenceAssessment());
+        data.put("refinementRounds", outcome.refinementRounds());
+        return new ToolExecutionResult("search_knowledge", true,
+                formatSearchResults(results, outcome.evidenceAssessment()), data);
     }
 
     private ToolExecutionResult executeGenerateSummary(Map<String, Object> arguments,
@@ -286,14 +289,25 @@ public class AgentToolRegistry {
         return schema;
     }
 
-    private String formatSearchResults(List<SearchResult> results) {
+    private String formatSearchResults(List<SearchResult> results,
+                                       com.yizhaoqi.smartpai.rag.model.EvidenceAssessment assessment) {
         if (results == null || results.isEmpty()) {
-            return "未检索到相关知识库片段。";
+            return "未检索到相关知识库片段。证据状态=INSUFFICIENT，请不要编造答案。";
         }
 
         StringBuilder output = new StringBuilder("检索到 ").append(results.size()).append(" 个知识库片段。")
                 .append("请基于这些片段回答用户问题；不得声称知识库暂无相关信息。")
                 .append("如果片段信息不足，请说明“基于已检索片段只能确认……”并标注来源编号。");
+        if (assessment != null) {
+            output.append("\n证据状态=").append(assessment.status())
+                    .append("，建议动作=").append(assessment.suggestedAction());
+            if (!assessment.missingAspects().isEmpty()) {
+                output.append("，仍缺少=").append(String.join("、", assessment.missingAspects()));
+            }
+            if (!assessment.conflicts().isEmpty()) {
+                output.append("，存在冲突=").append(String.join("；", assessment.conflicts()));
+            }
+        }
         for (int i = 0; i < results.size(); i++) {
             SearchResult result = results.get(i);
             output.append("\n\n[").append(i + 1).append("] ");

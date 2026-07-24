@@ -13,6 +13,7 @@ public class AgenticRagProperties {
     private QueryPlanning queryPlanning = new QueryPlanning();
     private Retrieval retrieval = new Retrieval();
     private Reranker reranker = new Reranker();
+    private Evidence evidence = new Evidence();
     private Evaluation evaluation = new Evaluation();
     private Tools tools = new Tools();
     private Context context = new Context();
@@ -41,6 +42,17 @@ public class AgenticRagProperties {
         private String model = "bge-reranker-v2-m3";
         private int timeoutSeconds = 12;
         private int maxDocuments = 40;
+    }
+
+    @Data
+    public static class Evidence {
+        private boolean enabled = true;
+        private int minResultCount = 2;
+        private double queryCoverageThreshold = 0.25d;
+        private double aspectCoverageThreshold = 0.5d;
+        private double complexAspectCoverageThreshold = 0.75d;
+        private int maxRefinementRounds = 2;
+        private int maxRefinementQueries = 3;
     }
 
     @Data

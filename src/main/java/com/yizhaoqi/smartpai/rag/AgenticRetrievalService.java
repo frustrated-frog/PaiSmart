@@ -2,6 +2,7 @@ package com.yizhaoqi.smartpai.rag;
 
 import com.yizhaoqi.smartpai.config.AgenticRagProperties;
 import com.yizhaoqi.smartpai.entity.SearchResult;
+import com.yizhaoqi.smartpai.rag.model.EvidenceAssessment;
 import com.yizhaoqi.smartpai.rag.model.QueryPlan;
 import com.yizhaoqi.smartpai.rag.model.RetrievalOutcome;
 import com.yizhaoqi.smartpai.rag.model.RetrievalTrace;
@@ -15,8 +16,10 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -30,6 +33,8 @@ public class AgenticRetrievalService {
     private final HybridSearchService hybridSearchService;
     private final RerankerService rerankerService;
     private final ParentContextAssembler parentContextAssembler;
+    private final EvidenceVerifierService evidenceVerifierService;
+    private final CorrectiveQueryRefiner correctiveQueryRefiner;
     private final AgenticRagProperties properties;
     private final Executor retrievalExecutor;
 
@@ -37,12 +42,16 @@ public class AgenticRetrievalService {
                                    HybridSearchService hybridSearchService,
                                    RerankerService rerankerService,
                                    ParentContextAssembler parentContextAssembler,
+                                   EvidenceVerifierService evidenceVerifierService,
+                                   CorrectiveQueryRefiner correctiveQueryRefiner,
                                    AgenticRagProperties properties,
                                    @Qualifier("ragRetrievalExecutor") Executor retrievalExecutor) {
         this.queryPlanningService = queryPlanningService;
         this.hybridSearchService = hybridSearchService;
         this.rerankerService = rerankerService;
         this.parentContextAssembler = parentContextAssembler;
+        this.evidenceVerifierService = evidenceVerifierService;
+        this.correctiveQueryRefiner = correctiveQueryRefiner;
         this.properties = properties;
         this.retrievalExecutor = retrievalExecutor;
     }
@@ -65,33 +74,93 @@ public class AgenticRetrievalService {
                         "intent", plan.intent().name(),
                         "complexity", plan.complexity().name(),
                         "planner", plan.planner(),
-                        "confidence", plan.confidence()
+                        "confidence", plan.confidence(),
+                        "clarificationRequired", plan.clarificationRequired()
                 )
         ));
 
         if (!properties.isEnabled() || !plan.retrievalRequired()) {
             RetrievalTrace trace = new RetrievalTrace(traceId, plan, stages, degradations, elapsed(totalStartedAt));
-            return new RetrievalOutcome(List.of(), trace);
+            return new RetrievalOutcome(List.of(), trace, null, 0);
         }
 
         AgenticRagProperties.Retrieval retrieval = properties.getRetrieval();
         int perChannelTopK = Math.max(requestedTopK, retrieval.getPerChannelTopK());
         int finalTopK = Math.max(1, requestedTopK > 0 ? requestedTopK : retrieval.getFinalTopK());
-        List<QueryPlan.QueryVariant> variants = plan.variants().stream()
+        List<QueryPlan.QueryVariant> initialVariants = plan.variants().stream()
                 .limit(retrieval.getMaxQueryVariants())
                 .toList();
 
-        long recallStartedAt = System.currentTimeMillis();
+        Set<String> executedQueries = new LinkedHashSet<>();
+        initialVariants.forEach(variant -> executedQueries.add(correctiveQueryRefiner.fingerprint(variant.query())));
+        List<ReciprocalRankFusion.RankedList> rankedLists = new ArrayList<>();
+        rankedLists.addAll(executeRecallRound(initialVariants, userId, perChannelTopK, 0, stages, degradations));
+
+        RankingOutcome ranking = rankAndAssemble(plan.originalQuery(), rankedLists, finalTopK, 0, stages, degradations);
+        EvidenceAssessment assessment = assess(plan, ranking.results(), 0, stages);
+        int completedRefinementRounds = 0;
+        String previousSignature = assessment.progressSignature();
+
+        if (properties.getEvidence().isEnabled()) {
+            for (int round = 1; round <= properties.getEvidence().getMaxRefinementRounds(); round++) {
+                if (!needsRefinement(assessment)) {
+                    break;
+                }
+                List<QueryPlan.QueryVariant> refinedVariants = correctiveQueryRefiner.refine(plan, assessment, executedQueries);
+                if (refinedVariants.isEmpty()) {
+                    degradations.add("EVIDENCE_REFINE_SKIPPED: 没有新的差异化查询");
+                    break;
+                }
+                refinedVariants.forEach(variant -> executedQueries.add(correctiveQueryRefiner.fingerprint(variant.query())));
+                rankedLists.addAll(executeRecallRound(refinedVariants, userId, perChannelTopK, round, stages, degradations));
+                ranking = rankAndAssemble(plan.originalQuery(), rankedLists, finalTopK, round, stages, degradations);
+                assessment = assess(plan, ranking.results(), round, stages);
+                completedRefinementRounds = round;
+                if (assessment.progressSignature().equals(previousSignature)) {
+                    degradations.add("EVIDENCE_REFINE_STOPPED: 连续两轮证据集合与覆盖主题没有变化");
+                    break;
+                }
+                previousSignature = assessment.progressSignature();
+            }
+        }
+
+        RetrievalTrace trace = new RetrievalTrace(
+                traceId,
+                plan,
+                stages,
+                List.copyOf(degradations),
+                elapsed(totalStartedAt)
+        );
+        logger.info("Agentic retrieval 完成: traceId={}, variants={}, lists={}, final={}, evidence={}, refinementRounds={}, latencyMs={}, degradations={}",
+                traceId,
+                executedQueries.size(),
+                rankedLists.size(),
+                ranking.results().size(),
+                assessment.status(),
+                completedRefinementRounds,
+                trace.totalLatencyMs(),
+                degradations.size());
+        return new RetrievalOutcome(ranking.results(), trace, assessment, completedRefinementRounds);
+    }
+
+    private List<ReciprocalRankFusion.RankedList> executeRecallRound(List<QueryPlan.QueryVariant> variants,
+                                                                     String userId,
+                                                                     int topK,
+                                                                     int round,
+                                                                     List<RetrievalTrace.Stage> stages,
+                                                                     List<String> degradations) {
+        long startedAt = System.currentTimeMillis();
         List<CompletableFuture<ChannelExecution>> futures = new ArrayList<>();
         for (QueryPlan.QueryVariant variant : variants) {
             futures.add(CompletableFuture.supplyAsync(
-                    () -> executeChannel("BM25", variant, userId, perChannelTopK), retrievalExecutor));
+                    () -> executeChannel("BM25", variant, userId, topK), retrievalExecutor));
             futures.add(CompletableFuture.supplyAsync(
-                    () -> executeChannel("VECTOR", variant, userId, perChannelTopK), retrievalExecutor));
+                    () -> executeChannel("VECTOR", variant, userId, topK), retrievalExecutor));
         }
 
         List<ReciprocalRankFusion.RankedList> rankedLists = new ArrayList<>();
         Map<String, Object> channelCounts = new LinkedHashMap<>();
+        int degradationCountBefore = degradations.size();
         for (CompletableFuture<ChannelExecution> future : futures) {
             ChannelExecution execution;
             try {
@@ -100,7 +169,7 @@ public class AgenticRetrievalService {
                 degradations.add("RETRIEVAL_TASK_FAILED: " + rootMessage(exception));
                 continue;
             }
-            String countKey = execution.channel() + ":" + execution.variant().type();
+            String countKey = execution.channel() + ':' + execution.variant().type() + ':' + round;
             channelCounts.put(countKey, execution.results().size());
             if (execution.error() != null) {
                 degradations.add(countKey + " -> " + execution.error());
@@ -114,13 +183,25 @@ public class AgenticRetrievalService {
         }
         int recalledCount = rankedLists.stream().mapToInt(list -> list.results().size()).sum();
         stages.add(new RetrievalTrace.Stage(
-                "PARALLEL_RECALL",
-                degradations.isEmpty() ? "SUCCEEDED" : "DEGRADED",
-                elapsed(recallStartedAt),
+                round == 0 ? "PARALLEL_RECALL" : "CORRECTIVE_RECALL_" + round,
+                degradations.size() == degradationCountBefore ? "SUCCEEDED" : "DEGRADED",
+                elapsed(startedAt),
                 variants.size(),
                 recalledCount,
                 channelCounts
         ));
+        return rankedLists;
+    }
+
+    private RankingOutcome rankAndAssemble(String query,
+                                           List<ReciprocalRankFusion.RankedList> rankedLists,
+                                           int finalTopK,
+                                           int round,
+                                           List<RetrievalTrace.Stage> stages,
+                                           List<String> degradations) {
+        AgenticRagProperties.Retrieval retrieval = properties.getRetrieval();
+        String suffix = round == 0 ? "" : "_" + round;
+        int recalledCount = rankedLists.stream().mapToInt(list -> list.results().size()).sum();
 
         long fusionStartedAt = System.currentTimeMillis();
         List<SearchResult> fused = ReciprocalRankFusion.fuse(
@@ -129,26 +210,26 @@ public class AgenticRetrievalService {
                 retrieval.getRrfRankConstant()
         );
         stages.add(new RetrievalTrace.Stage(
-                "RRF_FUSION",
+                "RRF_FUSION" + suffix,
                 "SUCCEEDED",
                 elapsed(fusionStartedAt),
                 recalledCount,
                 fused.size(),
-                Map.of("rankConstant", retrieval.getRrfRankConstant())
+                Map.of("rankConstant", retrieval.getRrfRankConstant(), "refinementRound", round)
         ));
 
         long rerankStartedAt = System.currentTimeMillis();
         RerankerService.RerankOutcome rerankOutcome = rerankerService.rerank(query, fused, finalTopK);
         if (rerankOutcome.degradationReason() != null) {
-            degradations.add("RERANKER -> " + rerankOutcome.degradationReason());
+            degradations.add("RERANKER" + suffix + " -> " + rerankOutcome.degradationReason());
         }
         stages.add(new RetrievalTrace.Stage(
-                "RERANK",
+                "RERANK" + suffix,
                 rerankOutcome.degradationReason() == null ? "SUCCEEDED" : "DEGRADED",
                 elapsed(rerankStartedAt),
                 fused.size(),
                 rerankOutcome.results().size(),
-                Map.of("strategy", rerankOutcome.strategy())
+                Map.of("strategy", rerankOutcome.strategy(), "refinementRound", round)
         ));
 
         long assemblyStartedAt = System.currentTimeMillis();
@@ -157,27 +238,48 @@ public class AgenticRetrievalService {
                 finalTopK
         );
         stages.add(new RetrievalTrace.Stage(
-                "PARENT_CONTEXT_ASSEMBLY",
+                "PARENT_CONTEXT_ASSEMBLY" + suffix,
                 "SUCCEEDED",
                 elapsed(assemblyStartedAt),
                 rerankOutcome.results().size(),
                 assembly.results().size(),
                 Map.of(
                         "expandedParents", assembly.expandedCount(),
-                        "deduplicatedChildren", assembly.deduplicatedCount()
+                        "deduplicatedChildren", assembly.deduplicatedCount(),
+                        "refinementRound", round
                 )
         ));
+        return new RankingOutcome(assembly.results());
+    }
 
-        RetrievalTrace trace = new RetrievalTrace(
-                traceId,
-                plan,
-                stages,
-                List.copyOf(degradations),
-                elapsed(totalStartedAt)
-        );
-        logger.info("Agentic retrieval 完成: traceId={}, variants={}, recalled={}, fused={}, final={}, latencyMs={}, degradations={}",
-                traceId, variants.size(), recalledCount, fused.size(), assembly.results().size(), trace.totalLatencyMs(), degradations.size());
-        return new RetrievalOutcome(assembly.results(), trace);
+    private EvidenceAssessment assess(QueryPlan plan,
+                                      List<SearchResult> results,
+                                      int round,
+                                      List<RetrievalTrace.Stage> stages) {
+        long startedAt = System.currentTimeMillis();
+        EvidenceAssessment assessment = evidenceVerifierService.assess(plan, results, round);
+        stages.add(new RetrievalTrace.Stage(
+                round == 0 ? "EVIDENCE_VERIFY" : "EVIDENCE_VERIFY_" + round,
+                assessment.status().name(),
+                elapsed(startedAt),
+                results.size(),
+                assessment.coveredAspects().size(),
+                Map.of(
+                        "confidence", assessment.confidence(),
+                        "coveredAspects", assessment.coveredAspects(),
+                        "missingAspects", assessment.missingAspects(),
+                        "conflictCount", assessment.conflicts().size(),
+                        "suggestedAction", assessment.suggestedAction(),
+                        "progressSignature", assessment.progressSignature(),
+                        "refinementRound", round
+                )
+        ));
+        return assessment;
+    }
+
+    private boolean needsRefinement(EvidenceAssessment assessment) {
+        return assessment.status() == EvidenceAssessment.Status.PARTIAL
+                || assessment.status() == EvidenceAssessment.Status.INSUFFICIENT;
     }
 
     private ChannelExecution executeChannel(String channel,
@@ -214,5 +316,8 @@ public class AgenticRetrievalService {
             List<SearchResult> results,
             String error
     ) {
+    }
+
+    private record RankingOutcome(List<SearchResult> results) {
     }
 }
