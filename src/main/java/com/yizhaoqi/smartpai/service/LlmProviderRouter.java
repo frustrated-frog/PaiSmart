@@ -33,17 +33,20 @@ public class LlmProviderRouter {
     private final UsageQuotaService usageQuotaService;
     private final ModelProviderConfigService modelProviderConfigService;
     private final ObjectMapper objectMapper;
+    private final AgentContextBudgetService contextBudgetService;
 
     public LlmProviderRouter(AiProperties aiProperties,
                              RateLimitService rateLimitService,
                              UsageQuotaService usageQuotaService,
                              ModelProviderConfigService modelProviderConfigService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             AgentContextBudgetService contextBudgetService) {
         this.aiProperties = aiProperties;
         this.rateLimitService = rateLimitService;
         this.usageQuotaService = usageQuotaService;
         this.modelProviderConfigService = modelProviderConfigService;
         this.objectMapper = objectMapper;
+        this.contextBudgetService = contextBudgetService;
     }
 
     public StreamHandle streamResponse(String requesterId,
@@ -178,9 +181,12 @@ public class LlmProviderRouter {
                                        int maxCompletionTokens) {
         ModelProviderConfigService.ActiveProviderView provider =
                 modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM);
-        Map<String, Object> request = buildReActRequest(provider.model(), messages, tools, maxCompletionTokens, false);
+        AgentContextBudgetService.CompactionResult compaction = contextBudgetService.compact(messages);
+        List<Map<String, Object>> compactedMessages = compaction.messages();
+        logCompaction(compaction);
+        Map<String, Object> request = buildReActRequest(provider.model(), compactedMessages, tools, maxCompletionTokens, false);
 
-        int estimatedPromptTokens = estimateObjectMessagesTokens(messages)
+        int estimatedPromptTokens = estimateObjectMessagesTokens(compactedMessages)
                 + (tools == null || tools.isEmpty() ? 0 : estimateToolsTokens(tools));
         UsageQuotaService.TokenReservationBundle reservation = rateLimitService.reserveLlmUsage(
                 requesterId, estimatedPromptTokens, maxCompletionTokens);
@@ -214,8 +220,11 @@ public class LlmProviderRouter {
                                         Consumer<ReActTurn> onComplete) {
         ModelProviderConfigService.ActiveProviderView provider =
                 modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM);
-        Map<String, Object> request = buildReActRequest(provider.model(), messages, tools, maxCompletionTokens, true);
-        int estimatedPromptTokens = estimateObjectMessagesTokens(messages)
+        AgentContextBudgetService.CompactionResult compaction = contextBudgetService.compact(messages);
+        List<Map<String, Object>> compactedMessages = compaction.messages();
+        logCompaction(compaction);
+        Map<String, Object> request = buildReActRequest(provider.model(), compactedMessages, tools, maxCompletionTokens, true);
+        int estimatedPromptTokens = estimateObjectMessagesTokens(compactedMessages)
                 + (tools == null || tools.isEmpty() ? 0 : estimateToolsTokens(tools));
         UsageQuotaService.TokenReservationBundle reservation = rateLimitService.reserveLlmUsage(
                 requesterId, estimatedPromptTokens, Math.max(maxCompletionTokens, 1));
@@ -262,6 +271,13 @@ public class LlmProviderRouter {
             builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + provider.apiKey());
         }
         return builder.build();
+    }
+
+    private void logCompaction(AgentContextBudgetService.CompactionResult result) {
+        if (result.droppedMessages() > 0 || result.compactedChars() < result.originalChars()) {
+            logger.info("Agent 上下文已压缩: originalChars={}, compactedChars={}, droppedMessages={}",
+                    result.originalChars(), result.compactedChars(), result.droppedMessages());
+        }
     }
 
     private void logProviderError(String message, Throwable error) {

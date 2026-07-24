@@ -15,6 +15,7 @@ public class AgenticRagProperties {
     private Reranker reranker = new Reranker();
     private Evaluation evaluation = new Evaluation();
     private Tools tools = new Tools();
+    private Context context = new Context();
 
     @Data
     public static class QueryPlanning {
@@ -57,5 +58,12 @@ public class AgenticRagProperties {
         private int maxConcurrentPerUser = 2;
         private int circuitFailureThreshold = 3;
         private int circuitCooldownSeconds = 30;
+    }
+
+    @Data
+    public static class Context {
+        private int maxPromptChars = 32000;
+        private int maxToolObservationChars = 8000;
+        private int maxHistoricalMessageChars = 1600;
     }
 }

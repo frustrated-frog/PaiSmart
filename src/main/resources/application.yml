@@ -268,6 +268,10 @@ agentic-rag:
     max-concurrent-per-user: ${AGENT_TOOL_MAX_CONCURRENT_PER_USER:2}
     circuit-failure-threshold: ${AGENT_TOOL_CIRCUIT_FAILURE_THRESHOLD:3}
     circuit-cooldown-seconds: ${AGENT_TOOL_CIRCUIT_COOLDOWN_SECONDS:30}
+  context:
+    max-prompt-chars: ${AGENT_CONTEXT_MAX_PROMPT_CHARS:32000}
+    max-tool-observation-chars: ${AGENT_CONTEXT_MAX_TOOL_OBSERVATION_CHARS:8000}
+    max-historical-message-chars: ${AGENT_CONTEXT_MAX_HISTORICAL_MESSAGE_CHARS:1600}
 
 # 微信支付相关配置
 wx:

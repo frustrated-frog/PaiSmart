@@ -58,6 +58,7 @@ public class ChatHandler {
     private final AgentToolRegistry agentToolRegistry;
     private final AgentRunService agentRunService;
     private final AgentMemoryService agentMemoryService;
+    private final AgentContextBudgetService contextBudgetService;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
     
@@ -84,6 +85,7 @@ public class ChatHandler {
                       AgentToolRegistry agentToolRegistry,
                       AgentRunService agentRunService,
                       AgentMemoryService agentMemoryService,
+                      AgentContextBudgetService contextBudgetService,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
         this.redisTemplate = redisTemplate;
@@ -96,6 +98,7 @@ public class ChatHandler {
         this.agentToolRegistry = agentToolRegistry;
         this.agentRunService = agentRunService;
         this.agentMemoryService = agentMemoryService;
+        this.contextBudgetService = contextBudgetService;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
     }
@@ -376,7 +379,7 @@ public class ChatHandler {
         Map<String, Object> message = new HashMap<>();
         message.put("role", "tool");
         message.put("tool_call_id", toolCallId == null ? "" : toolCallId);
-        message.put("content", content == null ? "" : content);
+        message.put("content", contextBudgetService.compactToolObservation(content));
         return message;
     }
 
