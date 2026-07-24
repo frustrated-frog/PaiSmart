@@ -433,12 +433,24 @@ declare namespace Api {
       toolName?: string;
       timestamp: number;
       metadata?: {
+        pendingTaskId?: number;
+        sourceGenerationId?: string;
+        resumeNode?: string;
+        terminalReason?: string;
+        missingSlots?: string[];
+        options?: string[];
+        resolvedSlots?: Record<string, string>;
         retrievalTrace?: {
           traceId: string;
           queryPlan: {
             intent: string;
             complexity: string;
             planner: string;
+            clarificationRequired?: boolean;
+            knownSlots?: Record<string, string>;
+            missingSlots?: string[];
+            clarificationQuestion?: string;
+            clarificationOptions?: string[];
             variants: Array<{ type: string; query: string; purpose?: string }>;
           };
           stages: Array<{

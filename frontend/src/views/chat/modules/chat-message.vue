@@ -101,6 +101,9 @@ const agentSteps = computed(() => {
 
 const agentTraceSummary = computed(() => {
   const steps = agentSteps.value;
+  if (steps.some(step => step.metadata?.terminalReason === 'WAITING_CLARIFICATION')) {
+    return '等待你补充一个关键信息';
+  }
   const running = steps.find(step => step.status === 'running');
   if (running) {
     return running.title;
@@ -113,6 +116,17 @@ const agentTraceSummary = computed(() => {
   }
   return `已完成 ${steps.length} 个执行步骤`;
 });
+
+const clarificationStep = computed(() =>
+  [...agentSteps.value].reverse().find(step => step.metadata?.terminalReason === 'WAITING_CLARIFICATION')
+);
+
+const clarificationOptions = computed(() => clarificationStep.value?.metadata?.options || []);
+
+function selectClarificationOption(option: string) {
+  chatStore.input.message = option;
+  window.$message?.info('已填入澄清选项，确认后发送即可继续原任务');
+}
 
 const canRetryRun = computed(() => Boolean(
   props.msg.role === 'assistant'
@@ -158,10 +172,16 @@ const retrievalStageLabels: Record<string, string> = {
   PARALLEL_RECALL: '并行召回',
   RRF_FUSION: 'RRF 融合',
   RERANK: '相关性重排',
-  PARENT_CONTEXT_ASSEMBLY: '父上下文扩展'
+  PARENT_CONTEXT_ASSEMBLY: '父上下文扩展',
+  EVIDENCE_VERIFY: '证据充分性判断'
 };
 
 function getRetrievalStageLabel(name: string) {
+  if (name.startsWith('CORRECTIVE_RECALL_')) return `第 ${name.split('_').at(-1)} 轮纠正检索`;
+  if (name.startsWith('EVIDENCE_VERIFY_')) return `第 ${name.split('_').at(-1)} 轮证据判断`;
+  if (name.startsWith('RRF_FUSION_')) return `第 ${name.split('_').at(-1)} 轮 RRF 融合`;
+  if (name.startsWith('RERANK_')) return `第 ${name.split('_').at(-1)} 轮相关性重排`;
+  if (name.startsWith('PARENT_CONTEXT_ASSEMBLY_')) return `第 ${name.split('_').at(-1)} 轮父上下文扩展`;
   return retrievalStageLabels[name] || name;
 }
 
@@ -537,6 +557,28 @@ async function handleSourceFileClick(fileInfo: {
         </div>
       </Transition>
     </div>
+    <div v-if="msg.role === 'assistant' && clarificationStep" class="clarification-card ml-12 mt-3">
+      <div class="clarification-card__heading">
+        <span class="clarification-card__icon"><icon-material-symbols:help-outline-rounded /></span>
+        <div>
+          <div class="clarification-card__eyebrow">CLARIFICATION</div>
+          <div class="clarification-card__title">补充后会继续原任务，不会重新开始</div>
+        </div>
+      </div>
+      <div v-if="clarificationOptions.length" class="clarification-card__options">
+        <NButton
+          v-for="option in clarificationOptions"
+          :key="option"
+          size="small"
+          round
+          secondary
+          type="primary"
+          @click="selectClarificationOption(option)"
+        >
+          {{ option }}
+        </NButton>
+      </div>
+    </div>
     <div
       v-else-if="msg.role === 'assistant' && toolEvents.length > 0"
       class="ml-12 mt-3 flex flex-col gap-2"
@@ -615,6 +657,52 @@ async function handleSourceFileClick(fileInfo: {
 </template>
 
 <style scoped lang="scss">
+.clarification-card {
+  max-width: 680px;
+  border: 1px solid rgb(var(--primary-color) / 0.18);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgb(var(--primary-color) / 0.08), rgb(var(--primary-color) / 0.025));
+  padding: 14px 16px;
+}
+
+.clarification-card__heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.clarification-card__icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgb(var(--primary-color) / 0.12);
+  color: rgb(var(--primary-color));
+  font-size: 18px;
+}
+
+.clarification-card__eyebrow {
+  color: rgb(var(--primary-color));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.clarification-card__title {
+  margin-top: 2px;
+  color: rgb(var(--text-color));
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.clarification-card__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 :deep(.source-file-link) {
   color: #1890ff;
   cursor: pointer;

@@ -64,6 +64,56 @@ public class AgentRunService {
         );
     }
 
+    @Transactional
+    public void startClarificationResume(String generationId,
+                                         String userId,
+                                         String conversationId,
+                                         String mergedQuestion,
+                                         String sourceGenerationId,
+                                         long pendingTaskId,
+                                         String resumeNode) {
+        AgentRun source = runRepository.findById(sourceGenerationId)
+                .filter(run -> userId.equals(run.getUserId()))
+                .orElseThrow(() -> new IllegalArgumentException("待澄清 Agent 运行不存在或无权恢复"));
+        if (!"WAITING_CLARIFICATION".equals(source.getStatus())) {
+            throw new IllegalArgumentException("Agent 运行当前不处于等待澄清状态");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        source.setStatus("RESUMED");
+        source.setCurrentStage("clarification-resumed");
+        source.setUpdatedAt(now);
+        source.setFinishedAt(now);
+        runRepository.save(source);
+
+        int nextAttempt = (source.getAttemptNumber() == null ? 1 : source.getAttemptNumber()) + 1;
+        startInternal(generationId, userId, conversationId, mergedQuestion, sourceGenerationId, nextAttempt);
+        checkpoint(generationId, "CLARIFICATION_RESUMED", Map.of(
+                "sourceGenerationId", sourceGenerationId,
+                "pendingTaskId", pendingTaskId,
+                "resumeNode", resumeNode == null ? "QUERY_PLANNING" : resumeNode
+        ));
+    }
+
+    @Transactional
+    public void waitForClarification(String generationId,
+                                     long pendingTaskId,
+                                     String question,
+                                     List<String> missingSlots,
+                                     String resumeNode) {
+        runRepository.findById(generationId).ifPresent(run -> {
+            run.setStatus("WAITING_CLARIFICATION");
+            run.setCurrentStage("clarification");
+            run.setUpdatedAt(LocalDateTime.now());
+            runRepository.save(run);
+            checkpoint(generationId, "WAITING_CLARIFICATION", Map.of(
+                    "pendingTaskId", pendingTaskId,
+                    "question", question == null ? "" : question,
+                    "missingSlots", missingSlots == null ? List.of() : missingSlots,
+                    "resumeNode", resumeNode == null ? "QUERY_PLANNING" : resumeNode
+            ));
+        });
+    }
+
     private void startInternal(String generationId,
                                String userId,
                                String conversationId,
@@ -211,7 +261,7 @@ public class AgentRunService {
                 .toList();
 
         Map<String, Long> statusCounts = new LinkedHashMap<>();
-        for (String status : List.of("RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED")) {
+        for (String status : List.of("RUNNING", "WAITING_CLARIFICATION", "RESUMED", "COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED")) {
             statusCounts.put(status, 0L);
         }
         runs.forEach(run -> statusCounts.merge(run.getStatus(), 1L, Long::sum));

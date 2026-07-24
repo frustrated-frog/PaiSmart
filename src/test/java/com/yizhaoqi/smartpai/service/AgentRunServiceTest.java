@@ -76,6 +76,29 @@ class AgentRunServiceTest {
     }
 
     @Test
+    void shouldResumeWaitingRunWithSameLineage() {
+        AgentRun source = run("source-run", "7", "WAITING_CLARIFICATION");
+        source.setAttemptNumber(1);
+        when(runRepository.findById("source-run")).thenReturn(Optional.of(source));
+        when(runRepository.existsById("resumed-run")).thenReturn(false);
+
+        service.startClarificationResume(
+                "resumed-run", "7", "conversation-1", "合并后的问题",
+                "source-run", 11L, "QUERY_PLANNING"
+        );
+
+        assertThat(source.getStatus()).isEqualTo("RESUMED");
+        ArgumentCaptor<AgentRun> captor = ArgumentCaptor.forClass(AgentRun.class);
+        verify(runRepository, org.mockito.Mockito.atLeast(2)).save(captor.capture());
+        AgentRun resumed = captor.getAllValues().stream()
+                .filter(run -> "resumed-run".equals(run.getGenerationId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(resumed.getRetryOfGenerationId()).isEqualTo("source-run");
+        assertThat(resumed.getAttemptNumber()).isEqualTo(2);
+    }
+
+    @Test
     void shouldRejectRetryAcrossUserBoundary() {
         when(runRepository.findById("run-1")).thenReturn(Optional.of(run("run-1", "8", "FAILED")));
 

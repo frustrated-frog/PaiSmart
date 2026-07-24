@@ -5,6 +5,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
+import com.yizhaoqi.smartpai.model.AgentPendingTask;
+import com.yizhaoqi.smartpai.rag.QueryPlanningService;
+import com.yizhaoqi.smartpai.rag.model.QueryPlan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -57,6 +60,8 @@ public class ChatHandler {
     private final ChatSessionRegistry chatSessionRegistry;
     private final AgentToolRegistry agentToolRegistry;
     private final AgentRunService agentRunService;
+    private final AgentPendingTaskService pendingTaskService;
+    private final QueryPlanningService queryPlanningService;
     private final AgentMemoryService agentMemoryService;
     private final AgentContextBudgetService contextBudgetService;
     private final AgentErrorSanitizer errorSanitizer;
@@ -75,6 +80,8 @@ public class ChatHandler {
     private final KeySetView<String, Boolean> cancelledGenerations = ConcurrentHashMap.newKeySet();
     // 用于存储每次生成任务的引用映射：generationId -> {referenceNumber -> detail}
     private final Map<String, Map<Integer, ReferenceInfo>> generationReferenceMappings = new ConcurrentHashMap<>();
+    // 执行查询可能包含合并后的澄清上下文；会话历史仍只保存用户本轮真实输入。
+    private final Map<String, String> generationPersistedUserMessages = new ConcurrentHashMap<>();
 
     public ChatHandler(RedisTemplate<String, String> redisTemplate,
                       HybridSearchService searchService,
@@ -85,6 +92,8 @@ public class ChatHandler {
                       ChatSessionRegistry chatSessionRegistry,
                       AgentToolRegistry agentToolRegistry,
                       AgentRunService agentRunService,
+                      AgentPendingTaskService pendingTaskService,
+                      QueryPlanningService queryPlanningService,
                       AgentMemoryService agentMemoryService,
                       AgentContextBudgetService contextBudgetService,
                       AgentErrorSanitizer errorSanitizer,
@@ -99,6 +108,8 @@ public class ChatHandler {
         this.chatSessionRegistry = chatSessionRegistry;
         this.agentToolRegistry = agentToolRegistry;
         this.agentRunService = agentRunService;
+        this.pendingTaskService = pendingTaskService;
+        this.queryPlanningService = queryPlanningService;
         this.agentMemoryService = agentMemoryService;
         this.contextBudgetService = contextBudgetService;
         this.errorSanitizer = errorSanitizer;
@@ -116,12 +127,36 @@ public class ChatHandler {
             // 1. 获取或创建会话 ID
             conversationId = getOrCreateConversationId(userId);
             conversationService.ensureConversationSession(Long.parseLong(userId), conversationId, userMessage);
+            var resolvedClarification = pendingTaskService.consume(userId, conversationId, userMessage);
+            String executionMessage = resolvedClarification
+                    .map(AgentPendingTaskService.ResolvedClarification::mergedQuery)
+                    .orElse(userMessage);
+            QueryPlan queryPlan = queryPlanningService.plan(executionMessage, userId);
             ChatGenerationStateService.GenerationSnapshot generation =
                     chatGenerationStateService.createGeneration(userId, conversationId, userMessage);
             generationId = generation.generationId();
-            agentRunService.start(generationId, userId, conversationId, userMessage);
+            generationPersistedUserMessages.put(generationId, userMessage);
+            if (resolvedClarification.isPresent()) {
+                AgentPendingTaskService.ResolvedClarification resolved = resolvedClarification.get();
+                agentRunService.startClarificationResume(
+                        generationId,
+                        userId,
+                        conversationId,
+                        executionMessage,
+                        resolved.sourceGenerationId(),
+                        resolved.pendingTaskId(),
+                        resolved.resumeNode()
+                );
+            } else {
+                agentRunService.start(generationId, userId, conversationId, executionMessage);
+            }
             logger.info("会话ID: {}, 用户ID: {}", conversationId, userId);
-            launchGeneration(userId, userMessage, conversationId, generationId, null);
+            if (queryPlan.clarificationRequired()) {
+                handleClarificationRequest(userId, executionMessage, conversationId, generationId, queryPlan);
+                return;
+            }
+            launchGeneration(userId, executionMessage, conversationId, generationId, null,
+                    resolvedClarification.orElse(null));
 
         } catch (RateLimitExceededException e) {
             sendRateLimitMessage(userId, null, e);
@@ -153,7 +188,8 @@ public class ChatHandler {
                 source.question()
         );
         agentRunService.startRetry(generation.generationId(), source);
-        launchGeneration(userId, source.question(), source.conversationId(), generation.generationId(), source);
+        generationPersistedUserMessages.put(generation.generationId(), source.question());
+        launchGeneration(userId, source.question(), source.conversationId(), generation.generationId(), source, null);
         return new RetryLaunch(
                 generation.generationId(),
                 source.generationId(),
@@ -166,7 +202,8 @@ public class ChatHandler {
                                   String userMessage,
                                   String conversationId,
                                   String generationId,
-                                  AgentRunService.RetryCandidate retrySource) {
+                                  AgentRunService.RetryCandidate retrySource,
+                                  AgentPendingTaskService.ResolvedClarification clarificationSource) {
         sendGenerationStart(userId, generationId, conversationId);
         if (retrySource != null) {
             sendAgentStep(userId, generationId, conversationId,
@@ -177,6 +214,18 @@ public class ChatHandler {
                             "retryOfGenerationId", retrySource.generationId(),
                             "lastStage", retrySource.lastStage() == null ? "unknown" : retrySource.lastStage(),
                             "attemptNumber", retrySource.attemptNumber() + 1
+                    ));
+        }
+        if (clarificationSource != null) {
+            sendAgentStep(userId, generationId, conversationId,
+                    "clarification-resume", "clarification", "completed", "已合并你的补充信息",
+                    "已恢复原任务并从 " + clarificationSource.resumeNode() + " 节点继续执行",
+                    null,
+                    Map.of(
+                            "pendingTaskId", clarificationSource.pendingTaskId(),
+                            "sourceGenerationId", clarificationSource.sourceGenerationId(),
+                            "resolvedSlots", clarificationSource.slots(),
+                            "resumeNode", clarificationSource.resumeNode()
                     ));
         }
         sendAgentStep(userId, generationId, conversationId,
@@ -203,6 +252,64 @@ public class ChatHandler {
             sendCompletionNotification(userId, generationId, conversationId, true, false);
             cleanupGenerationState(generationId, exception);
         }
+    }
+
+    private void handleClarificationRequest(String userId,
+                                            String executionMessage,
+                                            String conversationId,
+                                            String generationId,
+                                            QueryPlan plan) {
+        sendGenerationStart(userId, generationId, conversationId);
+        AgentPendingTask pendingTask = pendingTaskService.create(
+                generationId,
+                userId,
+                conversationId,
+                plan,
+                "QUERY_PLANNING"
+        );
+        agentRunService.waitForClarification(
+                generationId,
+                pendingTask.getId(),
+                pendingTask.getQuestion(),
+                plan.missingSlots(),
+                pendingTask.getResumeNode()
+        );
+        sendAgentStep(userId, generationId, conversationId,
+                "clarification", "clarification", "completed", "需要补充一个关键信息",
+                pendingTask.getQuestion(),
+                "ask_clarification",
+                Map.of(
+                        "pendingTaskId", pendingTask.getId(),
+                        "missingSlots", plan.missingSlots(),
+                        "options", plan.clarificationOptions(),
+                        "resumeNode", pendingTask.getResumeNode(),
+                        "terminalReason", "WAITING_CLARIFICATION"
+                ));
+
+        String response = formatClarificationQuestion(pendingTask.getQuestion(), plan.clarificationOptions());
+        chatGenerationStateService.appendChunk(generationId, response);
+        sendResponseChunk(userId, generationId, conversationId, response);
+        String persistedUserMessage = generationPersistedUserMessages.getOrDefault(generationId, executionMessage);
+        boolean persisted = persistConversation(userId, persistedUserMessage, response, conversationId, Map.of());
+        if (persisted) {
+            updateConversationHistory(conversationId, persistedUserMessage, response, Map.of());
+        }
+        chatGenerationStateService.markCompleted(generationId, Map.of());
+        sendCompletionNotification(userId, generationId, conversationId, false, !persisted);
+        generationPersistedUserMessages.remove(generationId);
+    }
+
+    private String formatClarificationQuestion(String question, List<String> options) {
+        StringBuilder output = new StringBuilder(question == null || question.isBlank()
+                ? "为了准确继续，请补充一下具体目标或范围。"
+                : question.trim());
+        if (options != null && !options.isEmpty()) {
+            output.append("\n\n你可以直接回复：");
+            for (int index = 0; index < options.size(); index++) {
+                output.append("\n").append(index + 1).append(". ").append(options.get(index));
+            }
+        }
+        return output.toString();
     }
 
     private void runReActLoopSafely(String userId,
@@ -579,9 +686,10 @@ public class ChatHandler {
         Map<Integer, ReferenceInfo> referenceMappings = generationReferenceMappings.get(generationId);
         // 先把消息事务性地落 MySQL；只有 MySQL 成功后才写 Redis 短期会话历史，
         // 否则两个数据源会出现一边有记录、一边没有的不一致状态。
-        boolean persisted = persistConversation(userId, userMessage, completeResponse, conversationId, referenceMappings);
+        String persistedUserMessage = generationPersistedUserMessages.getOrDefault(generationId, userMessage);
+        boolean persisted = persistConversation(userId, persistedUserMessage, completeResponse, conversationId, referenceMappings);
         if (persisted) {
-            updateConversationHistory(conversationId, userMessage, completeResponse, referenceMappings);
+            updateConversationHistory(conversationId, persistedUserMessage, completeResponse, referenceMappings);
         } else {
             logger.warn("MySQL 落库失败，跳过 Redis 会话历史写入以保持两端一致: generationId={}, conversationId={}",
                     generationId, conversationId);
@@ -620,6 +728,7 @@ public class ChatHandler {
     private void cleanupGenerationState(String generationId, Throwable throwable) {
         responseBuilders.remove(generationId);
         generationReferenceMappings.remove(generationId);
+        generationPersistedUserMessages.remove(generationId);
         stopFlags.remove(generationId);
         activeStreams.remove(generationId);
         cancelledGenerations.remove(generationId);

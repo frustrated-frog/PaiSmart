@@ -78,6 +78,11 @@ public class QueryPlanningService {
         QueryPlan.Complexity complexity = parseEnum(root.path("complexity").asText(), QueryPlan.Complexity.SIMPLE);
         List<String> entities = textArray(root.path("entities"));
         List<String> constraints = textArray(root.path("constraints"));
+        Map<String, String> knownSlots = textObject(root.path("knownSlots"));
+        List<String> missingSlots = textArray(root.path("missingSlots"));
+        boolean clarificationRequired = root.path("clarificationRequired").asBoolean(false);
+        String clarificationQuestion = root.path("clarificationQuestion").asText("").trim();
+        List<String> clarificationOptions = textArray(root.path("clarificationOptions"));
         List<QueryPlan.QueryVariant> variants = new ArrayList<>();
         variants.add(new QueryPlan.QueryVariant(QueryPlan.VariantType.ORIGINAL, originalQuery, "保留用户原始表达和实体"));
 
@@ -99,9 +104,13 @@ public class QueryPlanningService {
                 intent,
                 complexity,
                 root.path("retrievalRequired").asBoolean(intent != QueryPlan.Intent.CHAT),
-                root.path("clarificationRequired").asBoolean(false),
+                clarificationRequired,
                 entities,
                 constraints,
+                knownSlots,
+                missingSlots,
+                clarificationRequired ? defaultClarificationQuestion(clarificationQuestion, missingSlots) : null,
+                clarificationOptions,
                 variants,
                 clamp(root.path("confidence").asDouble(0.75d)),
                 "LLM_STRUCTURED"
@@ -112,6 +121,7 @@ public class QueryPlanningService {
         QueryPlan.Intent intent = inferIntent(query);
         boolean complex = looksComplex(query, intent);
         List<String> entities = extractEntities(query);
+        FallbackClarification clarification = inferFallbackClarification(query, intent, entities);
         List<QueryPlan.QueryVariant> variants = new ArrayList<>();
         variants.add(new QueryPlan.QueryVariant(QueryPlan.VariantType.ORIGINAL, query, "原始查询"));
 
@@ -130,9 +140,13 @@ public class QueryPlanningService {
                 intent,
                 complex ? QueryPlan.Complexity.COMPLEX : QueryPlan.Complexity.SIMPLE,
                 intent != QueryPlan.Intent.CHAT,
-                false,
+                clarification.required(),
                 entities,
                 List.of(),
+                Map.of(),
+                clarification.missingSlots(),
+                clarification.question(),
+                clarification.options(),
                 deduplicateAndLimit(variants, properties.getQueryPlanning().getMaxVariants()),
                 0.62d,
                 planner
@@ -225,6 +239,59 @@ public class QueryPlanningService {
         return values;
     }
 
+    private Map<String, String> textObject(JsonNode node) {
+        if (!node.isObject()) {
+            return Map.of();
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        node.fields().forEachRemaining(entry -> {
+            String value = entry.getValue().asText("").trim();
+            if (!value.isEmpty()) {
+                values.put(entry.getKey(), value);
+            }
+        });
+        return values;
+    }
+
+    private FallbackClarification inferFallbackClarification(String query,
+                                                              QueryPlan.Intent intent,
+                                                              List<String> entities) {
+        String normalized = query == null ? "" : query.trim();
+        if (intent == QueryPlan.Intent.ACTION && lacksActionTarget(normalized)) {
+            return new FallbackClarification(
+                    true,
+                    List.of("actionTarget"),
+                    "你希望我对哪个具体对象执行这个操作？",
+                    List.of()
+            );
+        }
+        if (intent == QueryPlan.Intent.COMPARE && entities.size() < 2) {
+            return new FallbackClarification(
+                    true,
+                    List.of("comparisonTargets"),
+                    "你希望比较哪两个具体对象？",
+                    List.of()
+            );
+        }
+        return new FallbackClarification(false, List.of(), null, List.of());
+    }
+
+    private boolean lacksActionTarget(String query) {
+        String normalized = query.replaceFirst("^(?:请|请你|麻烦|帮我|帮忙|给我)+", "").trim();
+        String tail = normalized.replaceFirst("^(?:执行|创建|删除|修改|提交|发送)", "").trim();
+        return tail.isBlank() || Set.of("一下", "这个", "那个", "它", "吧").contains(tail);
+    }
+
+    private String defaultClarificationQuestion(String question, List<String> missingSlots) {
+        if (question != null && !question.isBlank()) {
+            return question;
+        }
+        if (missingSlots != null && !missingSlots.isEmpty()) {
+            return "为了准确继续，请补充这个关键信息：" + missingSlots.get(0);
+        }
+        return "为了准确继续，你能再补充一下具体目标或范围吗？";
+    }
+
     private boolean containsAny(String value, String... candidates) {
         for (String candidate : candidates) {
             if (value.contains(candidate)) {
@@ -264,13 +331,27 @@ public class QueryPlanningService {
                   "clarificationRequired":false,
                   "entities":["原始实体"],
                   "constraints":["时间/范围/权限限制"],
+                  "knownSlots":{"槽位":"已知值"},
+                  "missingSlots":["缺失且会改变执行路径的槽位"],
+                  "clarificationQuestion":"只询问一个最关键问题",
+                  "clarificationOptions":["可选项1","可选项2"],
                   "confidence":0.0,
                   "variants":[
                     {"type":"LEXICAL|SEMANTIC|DECOMPOSED","query":"检索查询","purpose":"用途"}
                   ]
                 }
                 规则：原始查询由系统自动保留；最多生成 3 个额外查询；不得丢失专有名词、编号和限制条件；
-                简单问题不生成同义句；复杂比较或多跳问题优先拆成原子子问题；不要编造用户未提供的事实。
+                只有缺失信息会改变知识域、核心实体、时间结论或执行风险时才设置 clarificationRequired=true；
+                一次只询问一个信息增益最高的问题；简单问题不生成同义句；复杂比较或多跳问题优先拆成原子子问题；
+                不要编造用户未提供的事实。
                 """;
+    }
+
+    private record FallbackClarification(
+            boolean required,
+            List<String> missingSlots,
+            String question,
+            List<String> options
+    ) {
     }
 }

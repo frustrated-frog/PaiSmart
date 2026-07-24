@@ -65,6 +65,27 @@ CREATE TABLE document_vectors (
                                   is_public BOOLEAN NOT NULL DEFAULT FALSE COMMENT '文件是否公开'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文档向量存储表';
 
+CREATE TABLE IF NOT EXISTS agent_pending_tasks (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'Pending Task 主键',
+    generation_id VARCHAR(64) NOT NULL COMMENT '发起澄清的 Agent 运行',
+    user_id VARCHAR(64) NOT NULL COMMENT '所属用户',
+    conversation_id VARCHAR(64) NOT NULL COMMENT '所属会话',
+    status VARCHAR(24) NOT NULL COMMENT 'WAITING_CLARIFICATION/RESUMED/EXPIRED/CANCELLED',
+    original_query LONGTEXT NOT NULL COMMENT '澄清前原始问题',
+    intent VARCHAR(32) NOT NULL COMMENT '结构化意图',
+    known_slots_json LONGTEXT NOT NULL COMMENT '已知槽位 JSON',
+    missing_slots_json LONGTEXT NOT NULL COMMENT '缺失槽位 JSON',
+    question LONGTEXT NOT NULL COMMENT '向用户展示的单个关键问题',
+    options_json LONGTEXT NOT NULL COMMENT '候选选项 JSON',
+    resume_node VARCHAR(64) NOT NULL COMMENT '恢复节点',
+    expires_at DATETIME NOT NULL COMMENT '等待过期时间',
+    created_at DATETIME NOT NULL COMMENT '创建时间',
+    updated_at DATETIME NOT NULL COMMENT '更新时间',
+    PRIMARY KEY (id),
+    KEY idx_pending_task_user_conversation (user_id, conversation_id, status),
+    KEY idx_pending_task_generation (generation_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Agent 有状态澄清任务';
+
 CREATE TABLE rate_limit_configs (
                                     config_key VARCHAR(64) PRIMARY KEY COMMENT '限流配置键',
                                     single_max INT DEFAULT NULL COMMENT '单窗口最大次数',
