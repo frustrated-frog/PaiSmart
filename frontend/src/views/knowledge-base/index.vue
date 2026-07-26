@@ -194,6 +194,14 @@ const tableTasks = computed(() => {
 
   return [...localRows, ...remoteRows];
 });
+const showKnowledgeEmpty = computed(() => !loading.value && tableTasks.value.length === 0);
+const knowledgePipeline = [
+  { key: 'upload', label: '上传', description: '原始文档进入对象存储', icon: 'solar:upload-square-line-duotone' },
+  { key: 'parse', label: '解析', description: '提取正文、结构与页码', icon: 'solar:document-text-line-duotone' },
+  { key: 'chunk', label: '分块', description: '构建父子语义片段', icon: 'solar:layers-line-duotone' },
+  { key: 'embedding', label: '向量化', description: '生成可检索语义向量', icon: 'solar:code-scan-line-duotone' },
+  { key: 'index', label: '索引', description: '写入混合检索索引', icon: 'solar:database-line-duotone' }
+];
 
 onMounted(async () => {
   await getList();
@@ -511,9 +519,28 @@ async function onBeforeUpload(
 </script>
 
 <template>
-  <div class="min-h-500px flex-col-stretch gap-16px overflow-hidden lt-sm:overflow-auto">
-    <NCard title="文件列表" :bordered="false" size="small" class="sm:flex-1-hidden card-wrapper">
-      <template #header-extra>
+  <div class="knowledge-console min-h-500px overflow-hidden">
+    <section class="knowledge-console__intro">
+      <div class="knowledge-console__mark">
+        <icon-solar:folder-with-files-line-duotone />
+      </div>
+      <div class="min-w-0 flex-1">
+        <div class="knowledge-console__eyebrow">KNOWLEDGE PIPELINE</div>
+        <h2>企业知识资产</h2>
+        <p>每份文档都会经过解析、分块和向量化，最终进入 BM25 与向量混合检索。</p>
+      </div>
+      <div class="knowledge-console__stat">
+        <span>ACCESSIBLE DOCUMENTS</span>
+        <strong>{{ tableTasks.length }}</strong>
+      </div>
+    </section>
+
+    <section class="knowledge-assets">
+      <header class="knowledge-assets__header">
+        <div>
+          <div class="knowledge-assets__eyebrow">DOCUMENT REGISTRY</div>
+          <h3>文档资产</h3>
+        </div>
         <TableHeaderOperation v-model:columns="columnChecks" :loading="loading" @add="handleUpload" @refresh="getList">
           <template #prefix>
             <NButton size="small" ghost type="primary" @click="handleSearch">
@@ -524,8 +551,50 @@ async function onBeforeUpload(
             </NButton>
           </template>
         </TableHeaderOperation>
-      </template>
+      </header>
+
+      <div v-if="showKnowledgeEmpty" class="knowledge-empty">
+        <div class="knowledge-empty__content">
+          <span class="knowledge-empty__status">
+            <i />
+            PIPELINE READY
+          </span>
+          <h3>上传第一份文档，建立可追溯的企业知识</h3>
+          <p>支持 PDF、Word、Markdown 与常见文本格式。完成索引后，Agent 回答会附带原文证据和页码引用。</p>
+          <div class="knowledge-empty__actions">
+            <NButton type="primary" size="large" @click="handleUpload">
+              <template #icon>
+                <icon-solar:upload-square-line-duotone />
+              </template>
+              上传第一份文档
+            </NButton>
+            <NButton size="large" secondary @click="handleSearch">
+              <template #icon>
+                <icon-solar:magnifer-line-duotone />
+              </template>
+              体验知识检索
+            </NButton>
+          </div>
+        </div>
+
+        <div class="knowledge-pipeline" aria-label="知识处理流程">
+          <div v-for="(step, index) in knowledgePipeline" :key="step.key" class="knowledge-pipeline__step">
+            <span class="knowledge-pipeline__number">{{ String(index + 1).padStart(2, '0') }}</span>
+            <span class="knowledge-pipeline__icon"><SvgIcon :icon="step.icon" /></span>
+            <span class="knowledge-pipeline__copy">
+              <b>{{ step.label }}</b>
+              <small>{{ step.description }}</small>
+            </span>
+            <icon-material-symbols:arrow-forward-rounded
+              v-if="index < knowledgePipeline.length - 1"
+              class="knowledge-pipeline__arrow"
+            />
+          </div>
+        </div>
+      </div>
+
       <NDataTable
+        v-else
         striped
         :columns="columns"
         :data="tableTasks"
@@ -536,13 +605,13 @@ async function onBeforeUpload(
         remote
         :row-key="row => row.id"
         :pagination="mobilePagination"
-        class="sm:h-full"
+        class="knowledge-table"
       />
-    </NCard>
+    </section>
+
     <UploadDialog v-model:visible="uploadVisible" />
     <SearchDialog v-model:visible="searchVisible" />
 
-    <!-- 文件预览弹窗 -->
     <NModal v-model:show="previewVisible" class="document-preview-modal" :auto-focus="false">
       <div class="document-preview-modal-shell">
         <FilePreview
@@ -557,8 +626,235 @@ async function onBeforeUpload(
 </template>
 
 <style scoped lang="scss">
-.file-list-container {
-  transition: width 0.3s ease;
+.knowledge-console {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.knowledge-console__intro,
+.knowledge-assets {
+  border: 1px solid var(--zs-border);
+  background: var(--zs-surface-panel);
+}
+
+.knowledge-console__intro {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: var(--zs-shadow-workspace);
+}
+
+.knowledge-console__mark {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--zs-knowledge-indigo);
+  background: rgb(86 87 217 / 9%);
+  font-size: 25px;
+}
+
+.knowledge-console__eyebrow,
+.knowledge-assets__eyebrow {
+  color: var(--zs-signal-cyan);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+}
+
+.knowledge-console h2,
+.knowledge-assets h3,
+.knowledge-empty h3 {
+  margin: 0;
+  color: var(--zs-ink-primary);
+}
+
+.knowledge-console h2 {
+  margin-top: 2px;
+  font-size: 20px;
+}
+
+.knowledge-console__intro p {
+  margin: 3px 0 0;
+  color: var(--zs-ink-secondary);
+  font-size: 11px;
+}
+
+.knowledge-console__stat {
+  display: flex;
+  min-width: 155px;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.knowledge-console__stat span {
+  color: var(--zs-ink-secondary);
+  font-family: SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+.knowledge-console__stat strong {
+  color: var(--zs-knowledge-indigo);
+  font-family: 'Avenir Next', 'SF Pro Display', sans-serif;
+  font-size: 26px;
+  line-height: 1.1;
+}
+
+.knowledge-assets {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.knowledge-assets__header {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--zs-border);
+  padding: 10px 14px 10px 18px;
+  background: var(--zs-surface-muted);
+}
+
+.knowledge-assets h3 {
+  margin-top: 2px;
+  font-size: 15px;
+}
+
+.knowledge-empty {
+  display: grid;
+  min-height: 430px;
+  grid-template-columns: minmax(320px, 0.82fr) minmax(520px, 1.18fr);
+  align-items: center;
+  gap: 40px;
+  padding: 42px;
+}
+
+.knowledge-empty__content {
+  max-width: 520px;
+}
+
+.knowledge-empty__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--zs-evidence-emerald);
+  font-family: SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+}
+
+.knowledge-empty__status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--zs-evidence-emerald);
+  box-shadow: 0 0 0 4px rgb(5 150 105 / 10%);
+}
+
+.knowledge-empty h3 {
+  max-width: 460px;
+  margin-top: 12px;
+  font-family: 'Avenir Next', 'SF Pro Display', 'PingFang SC', sans-serif;
+  font-size: 25px;
+  line-height: 1.35;
+}
+
+.knowledge-empty__content > p {
+  max-width: 500px;
+  margin: 12px 0 0;
+  color: var(--zs-ink-secondary);
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.knowledge-empty__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.knowledge-pipeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.knowledge-pipeline::before {
+  position: absolute;
+  top: 24px;
+  bottom: 24px;
+  left: 51px;
+  width: 1px;
+  background: linear-gradient(var(--zs-knowledge-indigo), var(--zs-signal-cyan));
+  content: '';
+  opacity: 0.24;
+}
+
+.knowledge-pipeline__step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--zs-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--zs-surface-panel);
+}
+
+.knowledge-pipeline__number {
+  color: var(--zs-ink-secondary);
+  font-family: SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+}
+
+.knowledge-pipeline__icon {
+  z-index: 1;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--zs-knowledge-indigo);
+  background: var(--zs-surface-muted);
+  font-size: 18px;
+}
+
+.knowledge-pipeline__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.knowledge-pipeline__copy b {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.knowledge-pipeline__copy small {
+  color: var(--zs-ink-secondary);
+  font-size: 9px;
+}
+
+.knowledge-pipeline__arrow {
+  color: var(--zs-border);
+  font-size: 16px;
+  transform: rotate(90deg);
+}
+
+.knowledge-table {
+  height: calc(100% - 60px);
 }
 
 :deep() {
@@ -573,7 +869,7 @@ async function onBeforeUpload(
 
 .document-preview-modal-shell {
   overflow: hidden;
-  border-radius: 32px;
+  border-radius: 16px;
   box-shadow: 0 36px 120px rgba(15, 23, 42, 0.28);
 }
 </style>
