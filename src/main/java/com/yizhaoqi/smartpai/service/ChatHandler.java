@@ -71,6 +71,7 @@ public class ChatHandler {
     private final AgentToolLedgerService toolLedgerService;
     private final AgentMemoryService agentMemoryService;
     private final AgentContextBudgetService contextBudgetService;
+    private final AgentToolSelector agentToolSelector;
     private final AgentErrorSanitizer errorSanitizer;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
@@ -109,6 +110,7 @@ public class ChatHandler {
                       AgentToolLedgerService toolLedgerService,
                       AgentMemoryService agentMemoryService,
                       AgentContextBudgetService contextBudgetService,
+                      AgentToolSelector agentToolSelector,
                       AgentErrorSanitizer errorSanitizer,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
@@ -128,6 +130,7 @@ public class ChatHandler {
         this.toolLedgerService = toolLedgerService;
         this.agentMemoryService = agentMemoryService;
         this.contextBudgetService = contextBudgetService;
+        this.agentToolSelector = agentToolSelector;
         this.errorSanitizer = errorSanitizer;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
@@ -282,7 +285,8 @@ public class ChatHandler {
 
         try {
             chatMonitorExecutor.execute(() ->
-                    runReActLoopSafely(userId, userMessage, conversationId, generationId, history, responseFuture));
+                    runReActLoopSafely(userId, userMessage, conversationId, generationId,
+                            history, queryPlan, responseFuture));
         } catch (RejectedExecutionException exception) {
             logger.warn("聊天处理线程池已满，generationId: {}", generationId);
             RuntimeException busyException = new RuntimeException("系统繁忙，请稍后重试");
@@ -361,9 +365,10 @@ public class ChatHandler {
                                     String conversationId,
                                     String generationId,
                                     List<Map<String, String>> history,
+                                    QueryPlan queryPlan,
                                     CompletableFuture<String> responseFuture) {
         try {
-            runReActLoop(userId, userMessage, conversationId, generationId, history, responseFuture);
+            runReActLoop(userId, userMessage, conversationId, generationId, history, queryPlan, responseFuture);
         } catch (Exception e) {
             logger.error("ReAct 循环执行失败: generationId={}", generationId, e);
             sendAgentStep(userId, generationId, conversationId,
@@ -381,6 +386,7 @@ public class ChatHandler {
                               String conversationId,
                               String generationId,
                               List<Map<String, String>> history,
+                              QueryPlan queryPlan,
                               CompletableFuture<String> responseFuture) {
         sendAgentStep(userId, generationId, conversationId,
                 "intake", "understanding", "completed", "理解你的问题",
@@ -395,6 +401,10 @@ public class ChatHandler {
         int totalPromptTokens = 0;
         int totalCompletionTokens = 0;
         AgentTerminalReason forcedTerminalReason = null;
+        List<AgentToolRegistry.AgentTool> visibleTools = agentToolSelector.select(
+                queryPlan,
+                agentToolRegistry.getTools()
+        );
 
         reactLoop:
         for (int round = 1; round <= MAX_REACT_ROUNDS; round++) {
@@ -409,7 +419,7 @@ public class ChatHandler {
                     "第 " + round + " 轮决策", null);
 
             LlmProviderRouter.ReActTurn turn = streamReActTurnBlocking(
-                    userId, conversationId, generationId, messages, agentToolRegistry.getTools());
+                    userId, conversationId, generationId, messages, visibleTools);
             if (turn == null) {
                 // 上游 stream 被取消（如用户点 stop），保证内存映射被回收
                 cleanupGenerationState(generationId, null);
@@ -443,7 +453,8 @@ public class ChatHandler {
                     );
                     sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
                 } else {
-                    executedToolResult = executeToolForReAct(userId, userMessage, generationId, conversationId, toolCall);
+                    executedToolResult = executeToolForReAct(
+                            userId, userMessage, generationId, conversationId, queryPlan, toolCall);
                     executedToolCalls++;
                 }
                 messages.add(toolMessage(toolCall.id(), executedToolResult.content()));
@@ -501,6 +512,7 @@ public class ChatHandler {
                                                    String userMessage,
                                                    String generationId,
                                                    String conversationId,
+                                                   QueryPlan queryPlan,
                                                    LlmProviderRouter.ToolCallDecision toolCall) {
         AgentLoopGuard.ActionDecision actionDecision = agentLoopGuard.beforeAction(
                 generationId,
@@ -583,7 +595,8 @@ public class ChatHandler {
                     }
                     : null;
             AgentToolRegistry.ToolExecutionResult toolResult =
-                    agentToolRegistry.executeTool(toolCall.name(), toolCall.arguments(), userId, toolChunkConsumer);
+                    agentToolRegistry.executeTool(
+                            toolCall.name(), toolCall.arguments(), userId, toolChunkConsumer, queryPlan);
             toolLedgerService.complete(toolTicket, toolResult);
 
             taskLedgerService.observeToolResult(generationId, toolCall.name(), toolResult.data())

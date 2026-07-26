@@ -58,16 +58,35 @@ public class AgenticRetrievalService {
 
     public RetrievalOutcome retrieve(String query, String userId, int requestedTopK) {
         long totalStartedAt = System.currentTimeMillis();
+        long planningStartedAt = System.currentTimeMillis();
+        QueryPlan plan = queryPlanningService.plan(query, userId);
+        return retrieve(plan, userId, requestedTopK, totalStartedAt, elapsed(planningStartedAt));
+    }
+
+    /**
+     * Agent 主链使用的入口。QueryPlan 在 Run intake 阶段已经生成，此处只消费计划，
+     * 避免工具内部再次调用规划模型造成延迟和控制状态分叉。
+     */
+    public RetrievalOutcome retrieve(QueryPlan plan, String userId, int requestedTopK) {
+        if (plan == null) {
+            throw new IllegalArgumentException("QueryPlan 不能为空");
+        }
+        return retrieve(plan, userId, requestedTopK, System.currentTimeMillis(), 0L);
+    }
+
+    private RetrievalOutcome retrieve(QueryPlan plan,
+                                      String userId,
+                                      int requestedTopK,
+                                      long totalStartedAt,
+                                      long planningLatencyMs) {
         String traceId = UUID.randomUUID().toString();
         List<RetrievalTrace.Stage> stages = new ArrayList<>();
         List<String> degradations = Collections.synchronizedList(new ArrayList<>());
 
-        long planningStartedAt = System.currentTimeMillis();
-        QueryPlan plan = queryPlanningService.plan(query, userId);
         stages.add(new RetrievalTrace.Stage(
                 "QUERY_PLANNING",
                 "SUCCEEDED",
-                elapsed(planningStartedAt),
+                planningLatencyMs,
                 1,
                 plan.variants().size(),
                 Map.of(

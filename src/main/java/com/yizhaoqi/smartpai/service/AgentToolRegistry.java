@@ -10,6 +10,7 @@ import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.rag.AgenticRetrievalService;
+import com.yizhaoqi.smartpai.rag.model.QueryPlan;
 import com.yizhaoqi.smartpai.rag.model.RetrievalOutcome;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -79,13 +80,21 @@ public class AgentToolRegistry {
     }
 
     public ToolExecutionResult executeTool(String name, Map<String, Object> arguments, String userId) {
-        return executeTool(name, arguments, userId, null);
+        return executeTool(name, arguments, userId, null, null);
     }
 
     public ToolExecutionResult executeTool(String name,
                                            Map<String, Object> arguments,
                                            String userId,
                                            Consumer<String> onChunk) {
+        return executeTool(name, arguments, userId, onChunk, null);
+    }
+
+    public ToolExecutionResult executeTool(String name,
+                                           Map<String, Object> arguments,
+                                           String userId,
+                                           Consumer<String> onChunk,
+                                           QueryPlan queryPlan) {
         ToolHandler handler = handlers.get(name);
         if (handler == null) {
             throw new IllegalArgumentException("未注册的工具: " + name);
@@ -95,7 +104,7 @@ public class AgentToolRegistry {
                 name,
                 userId,
                 riskLevel(name),
-                () -> handler.execute(safeArguments, userId, onChunk)
+                () -> handler.execute(safeArguments, userId, onChunk, queryPlan)
         );
     }
 
@@ -108,12 +117,15 @@ public class AgentToolRegistry {
 
     private ToolExecutionResult executeSearchKnowledge(Map<String, Object> arguments,
                                                        String userId,
-                                                       Consumer<String> onChunk) {
+                                                       Consumer<String> onChunk,
+                                                       QueryPlan queryPlan) {
         requireUserId(userId);
         String query = getRequiredString(arguments, "query");
         int topK = getInt(arguments, "topK", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
 
-        RetrievalOutcome outcome = agenticRetrievalService.retrieve(query, userId, topK);
+        RetrievalOutcome outcome = queryPlan == null
+                ? agenticRetrievalService.retrieve(query, userId, topK)
+                : agenticRetrievalService.retrieve(queryPlan, userId, topK);
         List<SearchResult> results = outcome.results();
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("query", query);
@@ -128,12 +140,15 @@ public class AgentToolRegistry {
 
     private ToolExecutionResult executeGenerateSummary(Map<String, Object> arguments,
                                                        String userId,
-                                                       Consumer<String> onChunk) {
+                                                       Consumer<String> onChunk,
+                                                       QueryPlan queryPlan) {
         requireUserId(userId);
         String topic = getRequiredString(arguments, "topic");
         int maxDocs = getInt(arguments, "maxDocs", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
 
-        RetrievalOutcome retrievalOutcome = agenticRetrievalService.retrieve(topic, userId, maxDocs);
+        RetrievalOutcome retrievalOutcome = queryPlan == null
+                ? agenticRetrievalService.retrieve(topic, userId, maxDocs)
+                : agenticRetrievalService.retrieve(queryPlan, userId, maxDocs);
         List<SearchResult> results = retrievalOutcome.results();
         String summary = deepSeekClient.summarize(userId, topic, results, onChunk);
         Map<String, Object> data = new LinkedHashMap<>();
@@ -151,7 +166,8 @@ public class AgentToolRegistry {
 
     private ToolExecutionResult executeSubmitFeedback(Map<String, Object> arguments,
                                                       String userId,
-                                                      Consumer<String> onChunk) {
+                                                      Consumer<String> onChunk,
+                                                      QueryPlan queryPlan) {
         requireUserId(userId);
         String rating = getRequiredString(arguments, "rating").toLowerCase(Locale.ROOT);
         if (!"good".equals(rating) && !"bad".equals(rating)) {
@@ -189,7 +205,8 @@ public class AgentToolRegistry {
 
     private ToolExecutionResult executeKnowledgeStats(Map<String, Object> arguments,
                                                       String userId,
-                                                      Consumer<String> onChunk) {
+                                                      Consumer<String> onChunk,
+                                                      QueryPlan queryPlan) {
         try {
             IndicesStatsResponse statsResponse = elasticsearchClient.indices().stats(s -> s.index(KNOWLEDGE_INDEX));
             IndicesStats indexStats = statsResponse.indices().get(KNOWLEDGE_INDEX);
@@ -403,7 +420,10 @@ public class AgentToolRegistry {
 
     @FunctionalInterface
     private interface ToolHandler {
-        ToolExecutionResult execute(Map<String, Object> arguments, String userId, Consumer<String> onChunk);
+        ToolExecutionResult execute(Map<String, Object> arguments,
+                                    String userId,
+                                    Consumer<String> onChunk,
+                                    QueryPlan queryPlan);
     }
 
     public record AgentTool(
