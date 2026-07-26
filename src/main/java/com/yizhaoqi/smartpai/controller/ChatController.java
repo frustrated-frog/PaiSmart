@@ -6,7 +6,8 @@ import com.yizhaoqi.smartpai.service.AgentMemoryService;
 import com.yizhaoqi.smartpai.service.AgentRunService;
 import com.yizhaoqi.smartpai.service.AgentToolApprovalService;
 import com.yizhaoqi.smartpai.evaluation.RetrievalEvaluationService;
-import com.yizhaoqi.smartpai.evaluation.AgentEvaluationService;
+import com.yizhaoqi.smartpai.evaluation.AgentEvaluationRunner;
+import com.yizhaoqi.smartpai.model.AgentEvaluationDataset;
 import com.yizhaoqi.smartpai.service.ChatGenerationStateService;
 import com.yizhaoqi.smartpai.service.ChatHandler;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
@@ -40,7 +41,7 @@ public class ChatController {
     private final AgentRunService agentRunService;
     private final AgentToolApprovalService agentToolApprovalService;
     private final RetrievalEvaluationService retrievalEvaluationService;
-    private final AgentEvaluationService agentEvaluationService;
+    private final AgentEvaluationRunner agentEvaluationRunner;
     private final ChatHandler chatHandler;
 
     public ChatController(JwtUtils jwtUtils,
@@ -50,7 +51,7 @@ public class ChatController {
                           AgentRunService agentRunService,
                           AgentToolApprovalService agentToolApprovalService,
                           RetrievalEvaluationService retrievalEvaluationService,
-                          AgentEvaluationService agentEvaluationService,
+                          AgentEvaluationRunner agentEvaluationRunner,
                           ChatHandler chatHandler) {
         this.jwtUtils = jwtUtils;
         this.chatGenerationStateService = chatGenerationStateService;
@@ -59,7 +60,7 @@ public class ChatController {
         this.agentRunService = agentRunService;
         this.agentToolApprovalService = agentToolApprovalService;
         this.retrievalEvaluationService = retrievalEvaluationService;
-        this.agentEvaluationService = agentEvaluationService;
+        this.agentEvaluationRunner = agentEvaluationRunner;
         this.chatHandler = chatHandler;
     }
     
@@ -249,8 +250,12 @@ public class ChatController {
         try {
             return ResponseEntity.ok(responseBody(
                     200,
-                    "Agent 轨迹评测完成",
-                    agentEvaluationService.evaluate(request == null ? null : request.attempts())
+                    "真实 Agent 轨迹评测完成",
+                    agentEvaluationRunner.run(
+                            request == null ? null : request.dataset(),
+                            userId,
+                            request == null ? 1 : request.sampleCount()
+                    )
             ));
         } catch (IllegalArgumentException exception) {
             return ResponseEntity.badRequest().body(responseBody(400, exception.getMessage(), null));
@@ -377,7 +382,7 @@ public class ChatController {
     public record RetrievalEvaluationRequest(List<RetrievalEvaluationService.EvaluationCase> cases) {
     }
 
-    public record AgentEvaluationRequest(List<AgentEvaluationService.EvaluationAttempt> attempts) {
+    public record AgentEvaluationRequest(AgentEvaluationDataset dataset, int sampleCount) {
     }
 
     public record ToolApprovalRequest(String decision) {
