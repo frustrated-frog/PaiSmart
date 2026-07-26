@@ -76,20 +76,18 @@ graph TB
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "stateVersion": 8,
   "generationId": "run-id",
-  "currentNode": "TOOL_EXECUTION",
+  "currentNode": "approval",
   "status": "RUNNING",
-  "queryPlan": {},
   "taskLedger": {},
-  "toolCursor": 1,
-  "budgets": {
+  "budgetUsage": {
     "modelTurnsUsed": 2,
     "toolCallsUsed": 1,
     "promptTokensUsed": 3200,
     "completionTokensUsed": 640,
-    "startedAtEpochMs": 0
+    "elapsedMillis": 860
   },
   "terminalReason": null
 }
@@ -213,15 +211,15 @@ record AgentToolError(
 - 新 checkpoint 保存完整 `AgentRuntimeStateSnapshot`，并带 schemaVersion。
 - checkpoint 序列化或写入失败时，当前节点标记 `FAILED`，不能吞掉异常继续推进。
 - Tool Ledger 使用数据库唯一键和冲突重读实现并发幂等，不以 Java `synchronized` 作为跨实例保证。
-- 审批接口：`POST /chat/agent-runs/{generationId}/tool-approvals/{toolCallId}`，body 为 `APPROVE/REJECT`。
+- 审批接口：`POST /chat/agent-runs/{generationId}/tool-approvals/{toolLedgerId}`，body 为 `APPROVE/REJECT`。
 - 批准后创建新 attempt；拒绝后保存 ToolResult 并创建替代方案 attempt。
 
 ## 10. Eval Runner
 
 ```text
-Golden Dataset
+Versioned Dataset + persisted generationIds
   → Agent Evaluation Runner
-  → Real Agent Runs (k samples)
+  → Persisted Real Agent Runs (k samples)
   → Trace Projector
   → Deterministic Metrics + Optional Judge
   → Baseline Comparator
@@ -248,3 +246,17 @@ Trace Projector 只读取持久化 Run/Step/Tool/Checkpoint/Reference 数据。`
 - 集成测试：MySQL 唯一键竞争、运行中断、审批后新 attempt、Trace Projector。
 - 前端测试：审批卡片、预算告警、任务账本和终止原因。
 - 回归：现有 Agent/RAG 定向测试必须保持通过。
+
+## 13. 已实现组件与边界
+
+- `AgentToolSelector`：让 QueryPlan 真正参与工具可见性控制。
+- `AgentToolBatchExecutor`：保证一次 assistant tool-call batch 在任何终止路径下都协议闭合。
+- `AgentRunBudgetController`：使用单调时钟执行 Run 级硬预算，预算不能被模型重置。
+- `AgentToolErrorClassifier`：把 Java 异常转换为稳定、脱敏、可决策的工具错误。
+- `AgentRuntimeStateService`：以 `RUNTIME_STATE_V1` append-only checkpoint 保存单调状态版本，关键写入失败会回滚事务。
+- `AgentToolApprovalService`：校验 Run owner 和等待状态，相同决定幂等、相反决定冲突。
+- `AgentTraceProjector`：只读取 MySQL 中的 Run、Step 与 Tool Ledger，客户端不能提交实际轨迹或通过结果。
+- `AgentEvaluationRunner`：把版本化 rubric 与服务端投影信号合成评测 attempt，再复用 Metric Engine 计算门禁。
+- `agent-runtime-panel.vue`：以紧凑控制面展示 Plan、Budget、Evidence、Terminal；审批卡片明确展示风险策略和 ledger ID。
+
+当前 Snapshot v1 只持久化恢复所必需的稳定字段；完整 QueryPlan 仍由 Run 启动链持有，工具动作事实由独立 Tool Ledger 保存。这样避免在 JSON Snapshot 中复制并分叉权威数据。后续 schema v2 只在需要跨进程从任意图节点自动续跑时引入 queryPlan/task cursor 等字段。

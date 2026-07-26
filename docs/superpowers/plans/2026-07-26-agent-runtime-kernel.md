@@ -8,6 +8,8 @@
 
 **Tech Stack:** Java 17、Spring Boot 3.4、JUnit 5、Mockito、MySQL/JPA、Vue 3、TypeScript、Naive UI。
 
+**Implementation Status (2026-07-26):** Tasks 1–6 已实现并分批提交；Task 7 的定向测试、前端构建、浏览器登录门禁验证、文档回写和分支推送已执行。完整后端测试的遗留 UploadService/H2 配置失败记录在交付说明中。
+
 ---
 
 ### Task 1: 单次 QueryPlan 与确定性工具路由

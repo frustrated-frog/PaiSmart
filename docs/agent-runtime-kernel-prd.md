@@ -91,8 +91,8 @@
 
 ### 5.4 自动回归评测
 
-1. 评测 Runner 加载带版本的 Golden Set。
-2. 每个 case 真正运行 Agent，多次采样共享隔离数据集。
+1. 评测 Runner 加载带版本的 Golden Set 与对应真实 generationIds。
+2. 每个 case 选取 k 个已经真实执行并持久化的 Agent Run 作为样本。
 3. Trace Projector 从 Run、Step、Tool Ledger 和引用映射生成 actual signals。
 4. 确定性指标与 LLM Judge 分开计算。
 5. 与 baseline 比较，质量门禁失败时输出具体退化模块。
@@ -177,3 +177,19 @@
 3. Typed Error、版本化 checkpoint 和审批恢复。
 4. Eval Runner 与 Trace Projector。
 5. Agent Control Center UI 和端到端验证。
+
+## 10. 实际交付状态（2026-07-26）
+
+| 能力 | 状态 | 主要实现 |
+| --- | --- | --- |
+| Run 级单次 QueryPlan | 已完成 | Agent 主链复用同一计划，检索层不再隐式二次规划 |
+| Plan-aware 工具路由 | 已完成 | 非检索意图隐藏 RAG 工具，SUMMARY 避免重复搜索 |
+| Tool Batch 协议闭合 | 已完成 | 提前终止后为剩余 tool call 写入 `CANCELLED_BY_RUNTIME` |
+| Runtime 硬预算 | 已完成 | 模型轮次、工具数、Prompt/Completion Token、运行时间 |
+| 类型化工具错误 | 已完成 | 七类错误、retryable、safeMessage、suggestedAction、退避时间 |
+| 版本化 Runtime Snapshot | 已完成 v1 | schema/state version、节点、状态、终止原因与终态保护 |
+| 人工审批与恢复 | 已完成 | owner 校验、幂等决定、拒绝安全回放、批准后新 attempt |
+| 真实轨迹评测 | 已完成 v1 | 从持久化 Run/Step/Tool Ledger 投影 actual signals，计算 pass@1/pass^k |
+| Agent Control Center | 已完成 | Plan、Budget、Evidence、Terminal 与审批卡片 |
+
+本期 Eval Runner 的“k 次采样”使用已经实际运行并落库的 generationIds；它不会在同步 HTTP 请求内临时启动 k 次在线模型调用。这样评测可复现、可审计，也避免评测接口占用聊天并发。下一阶段可在离线 Job 中自动批量生成这些 Run。

@@ -38,6 +38,17 @@ score(d) = Σ 1 / (k + rank_i(d))
 
 用户点踩不等于事实。裸点踩只进入 `PROPOSED`；有明确纠错内容且通过状态转换后才能成为 `ACTIVE`。每条记忆保存 owner、scope、来源、置信度、过期时间和状态，避免把模型幻觉自动写成长期事实，也避免跨租户污染。
 
+### 2.6 Agent Runtime 为什么比“会调用工具”更有含金量
+
+- QueryPlan 在 Run 内只生成一次，并决定工具可见性；模型不能通过 Prompt 绕过后端路由。
+- 一次 Function Calling 返回多个 tool calls 时，首个终止结果之后的调用也会收到结构化取消 ToolMessage，保证协议 100% 闭合。
+- Runtime 同时限制模型轮次、工具数、Prompt/Completion Token 和墙钟时间，达到上限后给出确定性部分回答。
+- 高风险或结果未知的副作用进入 `WAITING_APPROVAL`，审批决定落 Tool Ledger，恢复时创建新 attempt 并复用同一动作指纹。
+- Runtime Snapshot 使用 schemaVersion 与单调 stateVersion；终态不能回到 RUNNING，恢复只能创建新的运行谱系。
+- 评测 API 不接收客户端提交的 actual/passed，而是从持久化 Run、Step、Tool Ledger 投影真实轨迹，再计算 trajectory、tool argument、恢复率、重复副作用率和 pass^k。
+
+这套设计的核心回答是：LLM 只负责提出语义候选，Runtime 才是权限、状态、预算、协议和审计的最终裁决者。
+
 ## 3. 现场演示路线
 
 ### 正常检索演示
@@ -62,6 +73,14 @@ score(d) = Σ 1 / (k + rank_i(d))
 3. 点击“重新运行”，展示 `恢复 Agent 运行` 步骤。
 4. 对比两个 generationId、attemptNumber 和 retry 谱系。
 5. 查看 `RUN HEALTH` 中的恢复次数和成功率。
+
+### 审批与运行控制演示
+
+1. 让一个结果未知的 `AT_MOST_ONCE` 工具进入审批状态。
+2. 展示审批卡片中的 replay policy、Tool Ledger ID 和风险说明。
+3. 分别演示批准与拒绝：批准只执行原动作指纹，拒绝回放安全 ToolResult 并生成替代方案。
+4. 展开 `RUNTIME CONTROL`，查看 intent、可见工具、轮次/工具/Token 预算、Evidence 与 TerminalReason。
+5. 对比 source 与 retry generation，说明为什么恢复使用新 attempt 而不是篡改原运行。
 
 ## 4. 常见追问
 
