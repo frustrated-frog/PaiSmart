@@ -66,14 +66,15 @@ const pageContext = computed(
       :collapsed="appStore.siderCollapse"
       @click="appStore.toggleSiderCollapse"
     />
-    <div id="header-extra" class="min-w-0 flex flex-1 items-center px-6">
-      <div class="min-w-0">
-        <div class="text-8px text-[var(--zs-signal-cyan)] font-750 tracking-[0.16em]">
+    <div id="header-extra" class="page-context">
+      <div class="page-context__content">
+        <div class="page-context__eyebrow">
           {{ pageContext.eyebrow }}
         </div>
-        <div class="mt-0.5 flex items-baseline gap-3">
-          <h1 class="m-0 truncate text-16px text-[var(--zs-ink-primary)] font-700">{{ pageContext.title }}</h1>
-          <span class="truncate text-11px text-[var(--zs-ink-secondary)]">{{ pageContext.description }}</span>
+        <div class="page-context__title-line">
+          <h1 class="page-context__title">{{ pageContext.title }}</h1>
+          <span class="page-context__divider" aria-hidden="true" />
+          <span class="page-context__description">{{ pageContext.description }}</span>
         </div>
       </div>
     </div>
@@ -103,4 +104,59 @@ const pageContext = computed(
   </DarkModeContainer>
 </template>
 
-<style scoped></style>
+<style scoped>
+.page-context {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 24px;
+}
+
+.page-context__content {
+  min-width: 0;
+}
+
+.page-context__eyebrow {
+  color: var(--zs-signal-cyan);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  line-height: 12px;
+}
+
+.page-context__title-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  margin-top: 3px;
+}
+
+.page-context__title {
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--zs-ink-primary);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 22px;
+}
+
+.page-context__divider {
+  width: 1px;
+  height: 14px;
+  flex: 0 0 1px;
+  background: var(--zs-border);
+}
+
+.page-context__description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--zs-ink-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

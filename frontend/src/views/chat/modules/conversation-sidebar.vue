@@ -62,8 +62,8 @@ function formatDate(dateStr?: string) {
 
 <template>
   <div
-    class="relative h-full flex flex-col shrink-0 overflow-hidden border-r border-#eef0f4 bg-#f8f9fb transition-[width] duration-200 ease-out dark:border-#ffffff0f dark:bg-#ffffff05"
-    :class="collapsed ? 'w-0 min-w-0 border-r-0' : 'w-[260px] min-w-[260px]'"
+    class="relative h-full flex flex-col shrink-0 overflow-hidden border border-[var(--zs-border)] rounded-2xl bg-#f8f9fb shadow-[0_10px_30px_rgb(33_43_69/5%)] transition-[width,opacity] duration-200 ease-out dark:bg-#ffffff05"
+    :class="collapsed ? 'w-0 min-w-0 border-0 opacity-0' : 'w-[260px] min-w-[260px] opacity-100'"
   >
     <div class="w-[260px] flex flex-col flex-1 overflow-hidden" :class="{ 'pointer-events-none invisible': collapsed }">
       <div class="flex items-center justify-between px-4 pb-2 pt-4">
@@ -75,7 +75,7 @@ function formatDate(dateStr?: string) {
             </template>
             新对话
           </NButton>
-          <NButton text size="tiny" @click="handleCollapse">
+          <NButton text size="tiny" aria-label="收起对话列表" title="收起对话列表" @click="handleCollapse">
             <template #icon>
               <icon-material-symbols:left-panel-close-outline-rounded />
             </template>

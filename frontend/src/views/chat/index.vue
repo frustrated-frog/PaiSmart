@@ -16,14 +16,12 @@ const sidebarCollapsed = ref(false);
     <ReferencePreviewPage />
   </div>
   <div v-else class="h-full bg-layout p-3">
-    <div
-      class="h-full flex overflow-hidden border border-[var(--zs-border)] rounded-2xl bg-[var(--zs-surface-panel)] shadow-[var(--zs-shadow-workspace)]"
-    >
+    <div class="chat-workspace" :class="{ 'chat-workspace--sidebar-open': !sidebarCollapsed }">
       <ConversationSidebar v-model:collapsed="sidebarCollapsed" />
-      <div class="relative min-w-0 flex flex-col flex-1">
+      <section class="chat-workspace__main" :class="{ 'chat-workspace__main--sidebar-collapsed': sidebarCollapsed }">
         <button
           v-show="sidebarCollapsed"
-          class="absolute left-3 top-3 z-20 h-9 w-9 inline-flex items-center justify-center rounded-xl bg-white text-#666 shadow-[0_1px_2px_rgba(15,23,42,0.06),0_4px_12px_rgba(15,23,42,0.08)] ring-1 ring-#0f172a14 transition-all duration-150 active:scale-95 hover:scale-105 dark:bg-#262626 dark:text-#bbb hover:text-[rgb(var(--primary-color))] dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),0_4px_12px_rgba(0,0,0,0.4)] dark:ring-#ffffff14"
+          class="chat-workspace__expand-button"
           aria-label="展开对话列表"
           @click="sidebarCollapsed = false"
         >
@@ -31,9 +29,68 @@ const sidebarCollapsed = ref(false);
         </button>
         <ChatList />
         <InputBox />
-      </div>
+      </section>
     </div>
   </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+.chat-workspace {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chat-workspace--sidebar-open {
+  gap: 12px;
+}
+
+.chat-workspace__main {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--zs-border);
+  border-radius: 16px;
+  background: var(--zs-surface-panel);
+  box-shadow: var(--zs-shadow-workspace);
+}
+
+.chat-workspace__main--sidebar-collapsed :deep(.chat-toolbar) {
+  padding-left: 60px;
+}
+
+.chat-workspace__expand-button {
+  position: absolute;
+  z-index: 20;
+  top: 12px;
+  left: 12px;
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--zs-border);
+  border-radius: 11px;
+  color: var(--zs-ink-secondary);
+  background: var(--zs-surface-panel);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 9%);
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    border-color 160ms ease;
+}
+
+.chat-workspace__expand-button:hover {
+  border-color: rgb(86 87 217 / 28%);
+  color: var(--zs-knowledge-indigo);
+}
+
+.chat-workspace__expand-button:active {
+  transform: scale(0.97);
+}
+</style>

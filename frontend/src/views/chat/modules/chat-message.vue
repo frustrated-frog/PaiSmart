@@ -759,11 +759,44 @@ async function handleSourceFileClick(fileInfo: {
 }
 
 .assistant-answer {
-  max-width: 780px;
+  max-width: 820px;
   border-left: 2px solid rgb(86 87 217 / 16%);
   padding-left: 18px;
   color: var(--zs-ink-primary);
-  line-height: 1.8;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.assistant-answer :deep(.vp-doc) {
+  min-width: 0;
+  color: inherit;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.assistant-answer :deep(.vp-doc > body) {
+  display: block;
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+}
+
+.assistant-answer :deep(.vp-doc p) {
+  margin: 10px 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.assistant-answer :deep(.vp-doc ul),
+.assistant-answer :deep(.vp-doc ol) {
+  margin: 10px 0;
+}
+
+.assistant-answer :deep(.vp-doc li + li) {
+  margin-top: 6px;
 }
 
 .user-question {
