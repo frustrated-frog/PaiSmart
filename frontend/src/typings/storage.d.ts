@@ -39,10 +39,9 @@ declare namespace StorageType {
     };
     /** The last login user id */
     lastLoginUserId: number;
-    /** Remembered login credentials on the current device */
+    /** Remembered login identity on the current device. Passwords must never be persisted. */
     rememberedLogin: {
       userName: string;
-      password: string;
     };
   }
 }

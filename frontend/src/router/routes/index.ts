@@ -8,7 +8,20 @@ import { transformElegantRoutesToVueRoutes } from '../elegant/transform';
  *
  * @link https://github.com/soybeanjs/elegant-router?tab=readme-ov-file#custom-route
  */
-const customRoutes: CustomRoute[] = [];
+const customRoutes: CustomRoute[] = [
+  {
+    name: 'login',
+    path: '/login/:module(pwd-login|code-login|register|reset-pwd|bind-wechat)?',
+    component: 'layout.blank$view.login',
+    props: true,
+    meta: {
+      title: 'login',
+      i18nKey: 'route.login',
+      constant: true,
+      hideInMenu: true
+    }
+  }
+];
 
 /** create routes when the auth route mode is static */
 export function createStaticRoutes() {
@@ -16,7 +29,10 @@ export function createStaticRoutes() {
 
   const authRoutes: ElegantRoute[] = [];
 
-  [...customRoutes, ...generatedRoutes].forEach(item => {
+  const customRouteNames = new Set(customRoutes.map(route => route.name));
+  const normalizedRoutes = [...generatedRoutes.filter(route => !customRouteNames.has(route.name)), ...customRoutes];
+
+  normalizedRoutes.forEach(item => {
     if (item.meta?.constant) {
       constantRoutes.push(item);
     } else {

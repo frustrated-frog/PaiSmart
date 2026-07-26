@@ -6,6 +6,7 @@ import { useRouterPush } from '@/hooks/common/router';
 import { useFormRules, useNaiveForm } from '@/hooks/common/form';
 import { localStg } from '@/utils/storage';
 import { $t } from '@/locales';
+import { sanitizeRememberedLogin } from './remembered-login';
 
 defineOptions({
   name: 'PwdLogin'
@@ -24,11 +25,18 @@ interface FormModel {
 type FormRuleModel = Pick<FormModel, 'userName' | 'password'>;
 
 const rememberedLogin = localStg.get('rememberedLogin');
+const safeRememberedLogin = sanitizeRememberedLogin(rememberedLogin);
+
+if (safeRememberedLogin) {
+  localStg.set('rememberedLogin', safeRememberedLogin);
+} else {
+  localStg.remove('rememberedLogin');
+}
 
 const model: FormModel = reactive({
-  userName: rememberedLogin?.userName || '',
-  password: rememberedLogin?.password || '',
-  rememberMe: Boolean(rememberedLogin)
+  userName: safeRememberedLogin?.userName || '',
+  password: '',
+  rememberMe: Boolean(safeRememberedLogin)
 });
 
 const rules = computed<Record<keyof FormRuleModel, App.Global.FormRule[]>>(() => {
@@ -51,15 +59,14 @@ async function handleSubmit() {
   }
 
   if (model.rememberMe) {
-    localStg.set('rememberedLogin', {
-      userName: model.userName,
-      password: model.password
-    });
+    const nextRememberedLogin = sanitizeRememberedLogin({ userName: model.userName });
+    if (nextRememberedLogin) {
+      localStg.set('rememberedLogin', nextRememberedLogin);
+    }
   } else {
     localStg.remove('rememberedLogin');
   }
 }
-
 </script>
 
 <template>
@@ -89,19 +96,14 @@ async function handleSubmit() {
       </NCheckbox>
     </div>
     <div class="flex-col gap-6">
-      <NButton type="primary" size="large" round block :loading="authStore.loginLoading" @click="handleSubmit">
+      <NButton type="primary" size="large" block :loading="authStore.loginLoading" @click="handleSubmit">
         {{ $t('page.login.common.login') }}
       </NButton>
       <NButton block @click="toggleLoginModule('register')">
         {{ $t(loginModuleRecord.register) }}
       </NButton>
 
-      <span class="text-center">
-        登录即代表已阅读并同意我们的
-        <NButton text type="primary">用户协议</NButton>
-        和
-        <NButton text type="primary">隐私政策</NButton>
-      </span>
+      <span class="text-center text-11px text-[var(--zs-ink-secondary)]">登录代表你已了解本站的数据与隐私说明</span>
     </div>
   </NForm>
 </template>
