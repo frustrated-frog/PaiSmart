@@ -28,6 +28,8 @@ replay_pid*
 .vite-ssg-temp
 .env
 *.local
+# Local Spring profile may contain developer credentials.
+/src/main/resources/application-local.yml
 dist
 dist-ssr
 node_modules
