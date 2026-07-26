@@ -67,6 +67,24 @@ const siderWidth = computed(() => getSiderWidth());
 
 const siderCollapsedWidth = computed(() => getSiderCollapsedWidth());
 
+const shellContentClass = computed(() => {
+  const classes = ['app-shell-content'];
+
+  if (themeStore.fixedHeaderAndTab) {
+    classes.push('app-shell-content--fixed');
+  }
+
+  if (siderVisible.value) {
+    classes.push(appStore.siderCollapse ? 'app-shell-content--collapsed' : 'app-shell-content--expanded');
+  }
+
+  if (appStore.contentXScrollable) {
+    classes.push('overflow-x-hidden');
+  }
+
+  return classes.join(' ');
+});
+
 function getSiderWidth() {
   const { reverseHorizontalMix } = themeStore.layout;
   const { width, mixWidth, mixChildMenuWidth } = themeStore.sider;
@@ -112,9 +130,10 @@ function getSiderCollapsedWidth() {
     :full-content="appStore.fullContent"
     :fixed-top="themeStore.fixedHeaderAndTab"
     :header-height="themeStore.header.height"
+    header-class="app-shell-header"
     :tab-visible="themeStore.tab.visible"
     :tab-height="themeStore.tab.height"
-    :content-class="appStore.contentXScrollable ? 'overflow-x-hidden' : ''"
+    :content-class="shellContentClass"
     :sider-visible="siderVisible"
     :sider-width="siderWidth"
     :sider-collapsed-width="siderCollapsedWidth"
@@ -144,5 +163,21 @@ function getSiderCollapsedWidth() {
 <style lang="scss">
 #__SCROLL_EL_ID__ {
   @include scrollbar();
+}
+
+.app-shell-header.absolute {
+  width: calc(100% - 32px) !important;
+}
+
+.app-shell-content--fixed {
+  padding-top: 16px;
+}
+
+.app-shell-content--expanded {
+  padding-left: calc(var(--soy-sider-width) + 16px) !important;
+}
+
+.app-shell-content--collapsed {
+  padding-left: calc(var(--soy-sider-collapsed-width) + 16px) !important;
 }
 </style>

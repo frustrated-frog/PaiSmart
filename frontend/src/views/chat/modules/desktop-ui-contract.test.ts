@@ -14,6 +14,24 @@ test('顶部页面信息使用安全留白、独立标题行和视觉分隔', ()
   assert.match(source, /page-context__divider/);
 });
 
+test('桌面应用壳层为浮动导航预留一致的横向与纵向安全区', () => {
+  const source = read('../../../layouts/base-layout/index.vue');
+
+  assert.match(source, /header-class="app-shell-header"/);
+  assert.match(source, /app-shell-content--expanded/);
+  assert.match(source, /app-shell-content--collapsed/);
+  assert.match(source, /\.app-shell-header[\s\S]*?width:\s*calc\(100%\s*-\s*32px\)/);
+  assert.match(source, /\.app-shell-content[\s\S]*?padding-top:\s*16px/);
+  assert.match(
+    source,
+    /\.app-shell-content--expanded[\s\S]*?padding-left:\s*calc\(var\(--soy-sider-width\)\s*\+\s*16px\)/
+  );
+  assert.match(
+    source,
+    /\.app-shell-content--collapsed[\s\S]*?padding-left:\s*calc\(var\(--soy-sider-collapsed-width\)\s*\+\s*16px\)/
+  );
+});
+
 test('桌面导航折叠按钮位于菜单滚动区域之外', () => {
   const source = read('../../../layouts/modules/global-menu/modules/vertical-menu.vue');
   const scrollbarEnd = source.indexOf('</SimpleScrollbar>');
