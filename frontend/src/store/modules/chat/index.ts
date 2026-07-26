@@ -168,11 +168,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     return true;
   }
 
-  async function decideToolApproval(
-    sourceGenerationId: string,
-    toolLedgerId: number,
-    decision: 'APPROVE' | 'REJECT'
-  ) {
+  async function decideToolApproval(sourceGenerationId: string, toolLedgerId: number, decision: 'APPROVE' | 'REJECT') {
     if (!sourceGenerationId || !Number.isFinite(toolLedgerId)) {
       return false;
     }
@@ -276,6 +272,12 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
         url: 'chat/agent-runs',
         params: { conversationId: cid }
       });
+      const restoredRunContent = (run: Api.Chat.AgentRunSummary) => {
+        if (run.errorMessage) return run.errorMessage;
+        if (run.status === 'WAITING_APPROVAL') return '该 Agent 正在等待你确认一项工具操作';
+        if (run.status === 'CANCELLED') return '本次 Agent 运行已停止';
+        return '本次 Agent 运行已中断';
+      };
       const restoredMessages = runsError
         ? []
         : (recoverableRuns || []).flatMap((run): Api.Chat.Message[] => [
@@ -288,11 +290,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
             },
             {
               role: 'assistant',
-              content: run.errorMessage || (
-                run.status === 'WAITING_APPROVAL'
-                  ? '该 Agent 正在等待你确认一项工具操作'
-                  : run.status === 'CANCELLED' ? '本次 Agent 运行已停止' : '本次 Agent 运行已中断'
-              ),
+              content: restoredRunContent(run),
               status: ['CANCELLED', 'WAITING_APPROVAL'].includes(run.status) ? 'finished' : 'error',
               conversationId: run.conversationId,
               generationId: run.generationId,

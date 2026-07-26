@@ -5,6 +5,7 @@ import { router } from '@/router';
 import { request } from '@/service/request';
 import { formatDate } from '@/utils/common';
 import { VueMarkdownIt } from '@/vendor/vue-markdown-shiki';
+import AgentRuntimePanel from './agent-runtime-panel.vue';
 defineOptions({ name: 'ChatMessage' });
 
 const props = defineProps<{
@@ -603,6 +604,11 @@ async function handleSourceFileClick(fileInfo: {
         </div>
       </Transition>
     </div>
+    <AgentRuntimePanel
+      v-if="msg.role === 'assistant' && agentSteps.length > 0"
+      class="ml-12 mt-3"
+      :steps="agentSteps"
+    />
     <div v-if="msg.role === 'assistant' && approvalStep" class="approval-card ml-12 mt-3">
       <div class="approval-card__heading">
         <span class="approval-card__icon"><icon-material-symbols:shield-lock-outline-rounded /></span>

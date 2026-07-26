@@ -440,6 +440,15 @@ declare namespace Api {
         toolLedgerId?: number;
         replayPolicy?: string;
         ledgerMessage?: string;
+        intent?: string;
+        visibleTools?: string[];
+        budget?: {
+          modelTurnsUsed: number;
+          toolCallsUsed: number;
+          promptTokensUsed: number;
+          completionTokensUsed: number;
+          elapsedMillis: number;
+        };
         missingSlots?: string[];
         options?: string[];
         resolvedSlots?: Record<string, string>;

@@ -448,7 +448,11 @@ public class ChatHandler {
             if (turn.toolCalls().isEmpty()) {
                 sendAgentStep(userId, generationId, conversationId,
                         reasoningStepId, "reasoning", "completed", reasoningTitle,
-                        "已完成推理并生成回答", null);
+                        "已完成推理并生成回答", null, Map.of(
+                                "budget", agentRunBudgetController.snapshot(generationId),
+                                "intent", queryPlan.intent().name(),
+                                "visibleTools", visibleTools.stream().map(AgentToolRegistry.AgentTool::name).toList()
+                        ));
                 finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
                         responseBuilders.get(generationId),
                         new LlmProviderRouter.StreamCompletion(turn.finishReason(), totalPromptTokens, totalCompletionTokens, turn.content().length()));
@@ -457,7 +461,11 @@ public class ChatHandler {
 
             sendAgentStep(userId, generationId, conversationId,
                     reasoningStepId, "reasoning", "completed", reasoningTitle,
-                    "已规划 " + turn.toolCalls().size() + " 个工具动作", null);
+                    "已规划 " + turn.toolCalls().size() + " 个工具动作", null, Map.of(
+                            "budget", agentRunBudgetController.snapshot(generationId),
+                            "intent", queryPlan.intent().name(),
+                            "visibleTools", visibleTools.stream().map(AgentToolRegistry.AgentTool::name).toList()
+                    ));
 
             messages.add(turn.assistantMessage());
             AgentToolBatchExecutor.BatchResult batchResult = agentToolBatchExecutor.execute(
