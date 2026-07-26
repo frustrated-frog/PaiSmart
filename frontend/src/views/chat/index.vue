@@ -15,9 +15,9 @@ const sidebarCollapsed = ref(false);
   <div v-if="showReferencePreview" class="h-full">
     <ReferencePreviewPage />
   </div>
-  <div v-else class="h-full bg-layout p-3 pt-6">
+  <div v-else class="h-full bg-layout p-3">
     <div
-      class="h-full flex overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_28px_rgba(15,23,42,0.06)] dark:bg-[#1c1c1c] dark:shadow-[0_1px_2px_rgba(0,0,0,0.5),0_8px_28px_rgba(0,0,0,0.3)]"
+      class="h-full flex overflow-hidden border border-[var(--zs-border)] rounded-2xl bg-[var(--zs-surface-panel)] shadow-[var(--zs-shadow-workspace)]"
     >
       <ConversationSidebar v-model:collapsed="sidebarCollapsed" />
       <div class="relative min-w-0 flex flex-col flex-1">

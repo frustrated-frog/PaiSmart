@@ -9,9 +9,9 @@ import AgentRuntimePanel from './agent-runtime-panel.vue';
 defineOptions({ name: 'ChatMessage' });
 
 const props = defineProps<{
-  msg: Api.Chat.Message,
-  sessionId?: string,
-  retrievalQueryFallback?: string
+  msg: Api.Chat.Message;
+  sessionId?: string;
+  retrievalQueryFallback?: string;
 }>();
 
 const authStore = useAuthStore();
@@ -73,8 +73,11 @@ async function handleFeedback(message: Api.Chat.Message, rating: 'good' | 'bad')
 }
 
 // 存储文件名和对应的事件处理
-const sourceFiles = ref<Array<{fileName: string, id: string, referenceNumber: number, fileMd5?: string, pageNumber?: number}>>([]);
-const bareUrlPattern = /https?:\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+/g;
+const sourceFiles = ref<
+  Array<{ fileName: string; id: string; referenceNumber: number; fileMd5?: string; pageNumber?: number }>
+>([]);
+// eslint-disable-next-line no-useless-escape
+const bareUrlPattern = /https?:\/\/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+/g;
 const toolNameLabels: Record<string, string> = {
   search_knowledge: '检索知识库',
   generate_summary: '生成知识摘要',
@@ -139,11 +142,7 @@ async function handleToolApproval(decision: 'APPROVE' | 'REJECT') {
     return;
   }
   approvalSubmitting.value = true;
-  const succeeded = await chatStore.decideToolApproval(
-    props.msg.generationId,
-    approvalToolLedgerId.value,
-    decision
-  );
+  const succeeded = await chatStore.decideToolApproval(props.msg.generationId, approvalToolLedgerId.value, decision);
   approvalSubmitting.value = false;
   if (!succeeded) {
     window.$message?.error('审批提交失败，请确认当前没有其他 Agent 任务正在运行');
@@ -161,11 +160,13 @@ function selectClarificationOption(option: string) {
   window.$message?.info('已填入澄清选项，确认后发送即可继续原任务');
 }
 
-const canRetryRun = computed(() => Boolean(
-  props.msg.role === 'assistant'
-  && props.msg.generationId
-  && (props.msg.status === 'error' || agentSteps.value.some(step => step.status === 'cancelled'))
-));
+const canRetryRun = computed(() =>
+  Boolean(
+    props.msg.role === 'assistant' &&
+      props.msg.generationId &&
+      (props.msg.status === 'error' || agentSteps.value.some(step => step.status === 'cancelled'))
+  )
+);
 
 async function handleRetryRun() {
   if (!props.msg.generationId || retrySubmitting.value || !props.retrievalQueryFallback?.trim()) {
@@ -245,6 +246,7 @@ function splitTrailingUrlPunctuation(rawUrl: string) {
     if (/[，。！？；：、,.!?;:]/.test(lastChar)) {
       trailing = `${lastChar}${trailing}`;
       url = url.slice(0, -1);
+      // eslint-disable-next-line no-continue
       continue;
     }
 
@@ -257,6 +259,7 @@ function splitTrailingUrlPunctuation(rawUrl: string) {
       if (closingCount > openingCount) {
         trailing = `${lastChar}${trailing}`;
         url = url.slice(0, -1);
+        // eslint-disable-next-line no-continue
         continue;
       }
     }
@@ -290,7 +293,7 @@ function createSourceLink(
   const linkClass = 'source-file-link';
   const trimmedFileName = fileName.trim();
   const fileId = `source-file-${sourceFiles.value.length}`;
-  const referenceNumber = parseInt(sourceNum, 10);
+  const referenceNumber = Number.parseInt(sourceNum, 10);
 
   sourceFiles.value.push({
     fileName: trimmedFileName,
@@ -319,19 +322,18 @@ function processSourceLinks(text: string): string {
     `来源#(\\d+):\\s*([^|;；,，、。！？!?\\n\\r]+?)\\s*\\|\\s*MD5:\\s*([a-fA-F0-9]+)${entryBoundary}`,
     'g'
   );
-  const simplePattern = new RegExp(
-    `来源#(\\d+):\\s*([^<>\\n\\r|;；,，、。！？!?]+?)${entryBoundary}`,
-    'g'
-  );
+  const simplePattern = new RegExp(`来源#(\\d+):\\s*([^<>\\n\\r|;；,，、。！？!?]+?)${entryBoundary}`, 'g');
 
-  let processedText = text.replace(pagePattern, (_match, sourceNum, fileName, pageNum) => {
+  let processedText = text.replace(pagePattern, (...replaceArgs) => {
+    const [, sourceNum, fileName, pageNum] = replaceArgs;
     return createSourceLink(sourceNum, fileName, {
-      pageNumber: parseInt(pageNum, 10),
+      pageNumber: Number.parseInt(pageNum, 10),
       displayName: `${fileName.trim()} (第${pageNum}页)`
     });
   });
 
-  processedText = processedText.replace(md5Pattern, (_match, sourceNum, fileName, fileMd5) => {
+  processedText = processedText.replace(md5Pattern, (...replaceArgs) => {
+    const [, sourceNum, fileName, fileMd5] = replaceArgs;
     return createSourceLink(sourceNum, fileName, {
       fileMd5: fileMd5.trim()
     });
@@ -421,6 +423,7 @@ function handleContentClick(event: MouseEvent) {
 }
 
 // 处理来源文件点击事件
+// eslint-disable-next-line complexity
 async function handleSourceFileClick(fileInfo: {
   fileName: string;
   referenceNumber: number;
@@ -428,15 +431,17 @@ async function handleSourceFileClick(fileInfo: {
   anchorText?: string;
 }) {
   const { fileName, referenceNumber, fileMd5: extractedMd5, anchorText: clickedAnchorText } = fileInfo;
-  const persistedDetail = props.msg.referenceMappings?.[String(referenceNumber)] || props.msg.referenceMappings?.[referenceNumber];
+  const persistedDetail =
+    props.msg.referenceMappings?.[String(referenceNumber)] || props.msg.referenceMappings?.[referenceNumber];
   const referenceSessionId = props.msg.generationId || props.msg.conversationId || props.sessionId;
-  console.log('点击了来源文件:', fileName, '引用编号:', referenceNumber, '提取的MD5:', extractedMd5, '会话ID:', referenceSessionId);
-
   try {
     let detail: Api.Document.ReferenceDetailResponse | null = null;
     const fallbackRetrievalQuery = props.retrievalQueryFallback || '';
 
-    if (referenceSessionId && (!persistedDetail?.retrievalQuery || !persistedDetail?.matchedChunkText || !persistedDetail?.evidenceSnippet)) {
+    if (
+      referenceSessionId &&
+      (!persistedDetail?.retrievalQuery || !persistedDetail?.matchedChunkText || !persistedDetail?.evidenceSnippet)
+    ) {
       try {
         const { error: detailError, data: detailData } = await request<Api.Document.ReferenceDetailResponse>({
           url: 'documents/reference-detail',
@@ -449,8 +454,8 @@ async function handleSourceFileClick(fileInfo: {
         if (!detailError && detailData?.fileMd5) {
           detail = detailData;
         }
-      } catch (detailErr) {
-        console.warn('通过API查询引用详情失败:', detailErr);
+      } catch {
+        detail = null;
       }
     }
 
@@ -489,18 +494,17 @@ async function handleSourceFileClick(fileInfo: {
       sessionId: referenceSessionId,
       referenceNumber
     });
-  } catch (err) {
-    console.error('文件下载失败:', err);
+  } catch {
     window.$message?.error(`文件下载失败: ${fileName}`);
   }
 }
 </script>
 
 <template>
-  <div class="mb-8 flex-col gap-2">
+  <article class="chat-message mb-6 flex-col gap-2" :class="`chat-message--${msg.role}`">
     <div v-if="msg.role === 'user'" class="flex items-center gap-4">
-      <NAvatar class="bg-success">
-        <SvgIcon icon="ph:user-circle" class="text-icon-large color-white" />
+      <NAvatar class="bg-[var(--zs-surface-muted)] text-[var(--zs-ink-secondary)]">
+        <SvgIcon icon="ph:user-circle" class="text-icon-large" />
       </NAvatar>
       <div class="flex-col gap-1">
         <NText class="text-4 font-bold">{{ msg.username || authStore.userInfo.username }}</NText>
@@ -534,12 +538,7 @@ async function handleSourceFileClick(fileInfo: {
 
       <Transition name="trace-fold">
         <div v-if="traceExpanded" class="agent-trace__body">
-          <div
-            v-for="step in agentSteps"
-            :key="step.stepId"
-            class="agent-step"
-            :class="`agent-step--${step.status}`"
-          >
+          <div v-for="step in agentSteps" :key="step.stepId" class="agent-step" :class="`agent-step--${step.status}`">
             <div class="agent-step__rail">
               <span class="agent-step__node">
                 <icon-eos-icons:three-dots-loading v-if="step.status === 'running'" />
@@ -576,15 +575,12 @@ async function handleSourceFileClick(fileInfo: {
                     class="retrieval-query"
                     :title="variant.purpose"
                   >
-                    <b>{{ variant.type }}</b>{{ variant.query }}
+                    <b>{{ variant.type }}</b>
+                    {{ variant.query }}
                   </span>
                 </div>
                 <div class="retrieval-stages">
-                  <div
-                    v-for="stage in getRetrievalTrace(step)?.stages || []"
-                    :key="stage.name"
-                    class="retrieval-stage"
-                  >
+                  <div v-for="stage in getRetrievalTrace(step)?.stages || []" :key="stage.name" class="retrieval-stage">
                     <span
                       class="retrieval-stage__dot"
                       :class="{ 'retrieval-stage__dot--degraded': isRetrievalStageWarning(stage.status) }"
@@ -608,6 +604,7 @@ async function handleSourceFileClick(fileInfo: {
       v-if="msg.role === 'assistant' && agentSteps.length > 0"
       class="ml-12 mt-3"
       :steps="agentSteps"
+      :running="msg.status === 'pending' || msg.status === 'loading'"
     />
     <div v-if="msg.role === 'assistant' && approvalStep" class="approval-card ml-12 mt-3">
       <div class="approval-card__heading">
@@ -626,12 +623,7 @@ async function handleSourceFileClick(fileInfo: {
         <span class="font-mono">Ledger #{{ approvalToolLedgerId }}</span>
       </div>
       <div v-if="!approvalDecision" class="approval-card__actions">
-        <NButton
-          type="primary"
-          size="small"
-          :loading="approvalSubmitting"
-          @click="handleToolApproval('APPROVE')"
-        >
+        <NButton type="primary" size="small" :loading="approvalSubmitting" @click="handleToolApproval('APPROVE')">
           允许执行
         </NButton>
         <NButton
@@ -671,10 +663,7 @@ async function handleSourceFileClick(fileInfo: {
         </NButton>
       </div>
     </div>
-    <div
-      v-else-if="msg.role === 'assistant' && toolEvents.length > 0"
-      class="ml-12 mt-3 flex flex-col gap-2"
-    >
+    <div v-else-if="msg.role === 'assistant' && toolEvents.length > 0" class="ml-12 mt-3 flex flex-col gap-2">
       <div
         v-for="event in toolEvents"
         :key="event.id || event.tool"
@@ -691,13 +680,29 @@ async function handleSourceFileClick(fileInfo: {
     <NText v-if="msg.status === 'pending' || (msg.status === 'loading' && msg.role === 'assistant' && !msg.content)">
       <icon-eos-icons:three-dots-loading class="ml-12 mt-2 text-8" />
     </NText>
-    <NText v-else-if="msg.status === 'error'" class="ml-12 mt-2 italic color-#d03050">
-      {{ msg.content || '服务器繁忙，请稍后再试' }}
-    </NText>
-    <div v-else-if="msg.role === 'assistant'" class="mt-2 pl-12" @click="handleContentClick">
+    <div v-else-if="msg.status === 'error'" class="message-error ml-12 mt-2">
+      <icon-material-symbols:error-outline-rounded class="message-error__icon" />
+      <div class="min-w-0 flex-1">
+        <div class="text-12px font-650">本次运行未完成</div>
+        <div class="mt-1 text-12px text-[var(--zs-ink-secondary)]">
+          {{ msg.content || '服务器繁忙，请稍后再试' }}
+        </div>
+      </div>
+      <NButton
+        v-if="canRetryRun"
+        size="small"
+        secondary
+        type="error"
+        :loading="retrySubmitting"
+        @click="handleRetryRun"
+      >
+        重新生成
+      </NButton>
+    </div>
+    <div v-else-if="msg.role === 'assistant'" class="assistant-answer ml-12 mt-2" @click="handleContentClick">
       <VueMarkdownIt :content="content" />
     </div>
-    <NText v-else-if="msg.role === 'user'" class="ml-12 mt-2 text-4">{{ content }}</NText>
+    <div v-else-if="msg.role === 'user'" class="user-question ml-12 mt-2">{{ content }}</div>
     <NDivider class="ml-12 w-[calc(100%-3rem)] mb-0! mt-2!" />
     <div class="ml-12 flex gap-2">
       <NButton quaternary title="复制回答" aria-label="复制回答" @click="handleCopy(msg.content)">
@@ -719,7 +724,7 @@ async function handleSourceFileClick(fileInfo: {
         </template>
       </NButton>
       <NButton
-        v-if="canRetryRun"
+        v-if="canRetryRun && msg.status !== 'error'"
         quaternary
         title="从 checkpoint 重新运行"
         aria-label="重新运行 Agent"
@@ -745,17 +750,56 @@ async function handleSourceFileClick(fileInfo: {
         </template>
       </NButton>
     </div>
-  </div>
+  </article>
 </template>
 
 <style scoped lang="scss">
+.chat-message {
+  position: relative;
+}
+
+.assistant-answer {
+  max-width: 780px;
+  border-left: 2px solid rgb(86 87 217 / 16%);
+  padding-left: 18px;
+  color: var(--zs-ink-primary);
+  line-height: 1.8;
+}
+
+.user-question {
+  width: fit-content;
+  max-width: min(720px, 82%);
+  border: 1px solid var(--zs-border);
+  border-radius: 8px 12px 12px;
+  padding: 11px 14px;
+  color: var(--zs-ink-primary);
+  background: var(--zs-surface-muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.message-error {
+  display: flex;
+  max-width: 760px;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid rgb(220 38 38 / 20%);
+  border-radius: 12px;
+  padding: 12px 13px;
+  color: #dc2626;
+  background: rgb(220 38 38 / 5%);
+}
+
+.message-error__icon {
+  flex: 0 0 auto;
+  font-size: 20px;
+}
+
 .approval-card {
   max-width: 680px;
   border: 1px solid rgb(245 158 11 / 0.32);
   border-radius: 16px;
-  background:
-    radial-gradient(circle at 100% 0, rgb(245 158 11 / 0.12), transparent 42%),
-    rgb(var(--card-color));
+  background: radial-gradient(circle at 100% 0, rgb(245 158 11 / 0.12), transparent 42%), rgb(var(--card-color));
   padding: 15px 16px;
   box-shadow: 0 10px 30px rgb(120 53 15 / 0.07);
 }
@@ -947,8 +991,7 @@ async function handleSourceFileClick(fileInfo: {
   border: 1px solid rgb(var(--primary-color) / 0.16);
   border-radius: 14px;
   background:
-    radial-gradient(circle at 0 0, rgb(var(--primary-color) / 0.09), transparent 42%),
-    rgb(var(--card-color) / 0.78);
+    radial-gradient(circle at 0 0, rgb(var(--primary-color) / 0.09), transparent 42%), rgb(var(--card-color) / 0.78);
   box-shadow: 0 8px 28px rgb(15 23 42 / 0.06);
   backdrop-filter: blur(12px);
 }
@@ -1232,7 +1275,9 @@ async function handleSourceFileClick(fileInfo: {
 
 .trace-fold-enter-active,
 .trace-fold-leave-active {
-  transition: opacity 0.16s ease, transform 0.16s ease;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
   transform-origin: top;
 }
 
