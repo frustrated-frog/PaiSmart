@@ -6,6 +6,7 @@ import com.yizhaoqi.smartpai.model.AgentRuntimeStateSnapshot;
 import com.yizhaoqi.smartpai.repository.AgentCheckpointRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -29,6 +30,7 @@ public class AgentRuntimeStateService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
+    @Autowired
     public AgentRuntimeStateService(AgentCheckpointRepository repository, ObjectMapper objectMapper) {
         this(repository, objectMapper, Clock.systemUTC());
     }

@@ -3,6 +3,7 @@ package com.yizhaoqi.smartpai.service;
 import com.yizhaoqi.smartpai.config.AgenticRagProperties;
 import com.yizhaoqi.smartpai.model.AgentTerminalReason;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +17,7 @@ public class AgentRunBudgetController {
     private final LongSupplier nanoTime;
     private final Map<String, MutableUsage> usages = new ConcurrentHashMap<>();
 
+    @Autowired
     public AgentRunBudgetController(AgenticRagProperties properties) {
         this(properties, System::nanoTime);
     }
