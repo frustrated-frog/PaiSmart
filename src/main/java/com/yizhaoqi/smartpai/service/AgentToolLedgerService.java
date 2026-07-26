@@ -58,6 +58,13 @@ public class AgentToolLedgerService {
         if (replaySourceGenerationId != null && !replaySourceGenerationId.isBlank()) {
             Optional<AgentToolCall> source = find(replaySourceGenerationId, actionFingerprint);
             if (source.isPresent()) {
+                if ("APPROVED".equals(source.get().getStatus())) {
+                    AgentToolCall approved = saveState(
+                            generationId, toolCallId, toolName, actionFingerprint,
+                            arguments, policy, "RUNNING", source.get().getId());
+                    return new PreparedToolCall(
+                            Disposition.EXECUTE, approved, null, "人工审批已通过，允许执行工具");
+                }
                 PreparedToolCall decision = fromExisting(
                         source.get(), generationId, toolCallId, toolName, actionFingerprint, arguments, policy);
                 if (decision.disposition() != Disposition.EXECUTE) {
@@ -108,6 +115,25 @@ public class AgentToolLedgerService {
                                           String actionFingerprint,
                                           Map<String, Object> arguments,
                                           AgentToolRegistry.ToolPolicy policy) {
+        if ("REJECTED".equals(existing.getStatus())) {
+            AgentToolRegistry.ToolExecutionResult result = new AgentToolRegistry.ToolExecutionResult(
+                    toolName,
+                    false,
+                    "用户拒绝了该工具操作，请不要执行副作用，并提供安全替代方案。",
+                    Map.of("approvalStatus", "REJECTED"),
+                    false
+            );
+            if (generationId.equals(existing.getGenerationId())) {
+                return new PreparedToolCall(Disposition.REUSE, existing, result, "用户已拒绝该工具操作");
+            }
+            AgentToolCall replay = saveState(generationId, toolCallId, toolName, actionFingerprint,
+                    arguments, policy, "REUSED", existing.getId());
+            replay.setResultContent(result.content());
+            replay.setResultDataJson(writeJson(result.data()));
+            replay.setFinishedAt(LocalDateTime.now());
+            repository.save(replay);
+            return new PreparedToolCall(Disposition.REUSE, replay, result, "已回放用户拒绝决定");
+        }
         if (List.of("SUCCESS", "REUSED").contains(existing.getStatus())) {
             AgentToolRegistry.ToolExecutionResult result = new AgentToolRegistry.ToolExecutionResult(
                     toolName,

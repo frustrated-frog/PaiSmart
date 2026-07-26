@@ -23,6 +23,8 @@ function handleCopy(content: string) {
 const chatStore = useChatStore();
 const feedbackSubmitting = ref<Record<string, boolean>>({});
 const retrySubmitting = ref(false);
+const approvalSubmitting = ref(false);
+const approvalDecision = ref<'APPROVE' | 'REJECT' | null>(null);
 
 function getMessageFeedbackKey(message: Api.Chat.Message) {
   return message.generationId || `${message.conversationId || 'unknown'}:${message.timestamp || ''}`;
@@ -81,7 +83,8 @@ const toolNameLabels: Record<string, string> = {
 const toolStatusLabels: Record<Api.Chat.AgentToolEvent['status'], string> = {
   executing: '执行中',
   success: '已完成',
-  failed: '失败'
+  failed: '失败',
+  waiting_approval: '等待确认'
 };
 
 const toolEvents = computed(() => props.msg.toolEvents || []);
@@ -101,6 +104,9 @@ const agentSteps = computed(() => {
 
 const agentTraceSummary = computed(() => {
   const steps = agentSteps.value;
+  if (steps.some(step => step.metadata?.terminalReason === 'WAITING_APPROVAL')) {
+    return '一个高风险工具正在等待你确认';
+  }
   if (steps.some(step => step.metadata?.terminalReason === 'WAITING_CLARIFICATION')) {
     return '等待你补充一个关键信息';
   }
@@ -120,6 +126,32 @@ const agentTraceSummary = computed(() => {
 const clarificationStep = computed(() =>
   [...agentSteps.value].reverse().find(step => step.metadata?.terminalReason === 'WAITING_CLARIFICATION')
 );
+
+const approvalStep = computed(() =>
+  [...agentSteps.value].reverse().find(step => step.metadata?.terminalReason === 'WAITING_APPROVAL')
+);
+
+const approvalToolLedgerId = computed(() => Number(approvalStep.value?.metadata?.toolLedgerId));
+
+async function handleToolApproval(decision: 'APPROVE' | 'REJECT') {
+  if (!props.msg.generationId || !Number.isFinite(approvalToolLedgerId.value) || approvalSubmitting.value) {
+    return;
+  }
+  approvalSubmitting.value = true;
+  const succeeded = await chatStore.decideToolApproval(
+    props.msg.generationId,
+    approvalToolLedgerId.value,
+    decision
+  );
+  approvalSubmitting.value = false;
+  if (!succeeded) {
+    window.$message?.error('审批提交失败，请确认当前没有其他 Agent 任务正在运行');
+    return;
+  }
+  approvalDecision.value = decision;
+  window.$message?.success(decision === 'APPROVE' ? '已授权，Agent 正在恢复执行' : '已拒绝，Agent 将改用安全方案');
+  chatStore.scrollToBottom?.();
+}
 
 const clarificationOptions = computed(() => clarificationStep.value?.metadata?.options || []);
 
@@ -571,7 +603,47 @@ async function handleSourceFileClick(fileInfo: {
         </div>
       </Transition>
     </div>
-    <div v-if="msg.role === 'assistant' && clarificationStep" class="clarification-card ml-12 mt-3">
+    <div v-if="msg.role === 'assistant' && approvalStep" class="approval-card ml-12 mt-3">
+      <div class="approval-card__heading">
+        <span class="approval-card__icon"><icon-material-symbols:shield-lock-outline-rounded /></span>
+        <div class="approval-card__heading-copy">
+          <div class="approval-card__eyebrow">HUMAN APPROVAL</div>
+          <div class="approval-card__title">Agent 请求执行 {{ getToolLabel(approvalStep.toolName || '') }}</div>
+        </div>
+        <span class="approval-card__risk">高风险操作</span>
+      </div>
+      <p class="approval-card__detail">
+        {{ approvalStep.metadata?.ledgerMessage || '该操作可能产生外部副作用，只有得到你的明确授权后才会执行。' }}
+      </p>
+      <div class="approval-card__meta">
+        <span>策略 {{ approvalStep.metadata?.replayPolicy || 'REQUIRES_APPROVAL' }}</span>
+        <span class="font-mono">Ledger #{{ approvalToolLedgerId }}</span>
+      </div>
+      <div v-if="!approvalDecision" class="approval-card__actions">
+        <NButton
+          type="primary"
+          size="small"
+          :loading="approvalSubmitting"
+          @click="handleToolApproval('APPROVE')"
+        >
+          允许执行
+        </NButton>
+        <NButton
+          size="small"
+          secondary
+          type="error"
+          :disabled="approvalSubmitting"
+          @click="handleToolApproval('REJECT')"
+        >
+          拒绝操作
+        </NButton>
+      </div>
+      <div v-else class="approval-card__decision">
+        <icon-material-symbols:check-circle-outline-rounded />
+        {{ approvalDecision === 'APPROVE' ? '已授权，正在新的运行中继续' : '已拒绝，正在生成安全替代方案' }}
+      </div>
+    </div>
+    <div v-else-if="msg.role === 'assistant' && clarificationStep" class="clarification-card ml-12 mt-3">
       <div class="clarification-card__heading">
         <span class="clarification-card__icon"><icon-material-symbols:help-outline-rounded /></span>
         <div>
@@ -671,6 +743,102 @@ async function handleSourceFileClick(fileInfo: {
 </template>
 
 <style scoped lang="scss">
+.approval-card {
+  max-width: 680px;
+  border: 1px solid rgb(245 158 11 / 0.32);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 100% 0, rgb(245 158 11 / 0.12), transparent 42%),
+    rgb(var(--card-color));
+  padding: 15px 16px;
+  box-shadow: 0 10px 30px rgb(120 53 15 / 0.07);
+}
+
+.approval-card__heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.approval-card__icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 11px;
+  background: rgb(245 158 11 / 0.14);
+  color: #d97706;
+  font-size: 19px;
+}
+
+.approval-card__heading-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.approval-card__eyebrow {
+  color: #d97706;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+}
+
+.approval-card__title {
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 650;
+  color: rgb(var(--text-color));
+}
+
+.approval-card__risk {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgb(245 158 11 / 0.12);
+  padding: 4px 8px;
+  color: #b45309;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.approval-card__detail {
+  margin: 12px 0 0;
+  color: rgb(var(--text-color-2));
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.approval-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+  color: rgb(var(--text-color-3));
+  font-size: 10px;
+}
+
+.approval-card__meta span {
+  border: 1px solid rgb(var(--border-color) / 0.18);
+  border-radius: 999px;
+  padding: 3px 7px;
+}
+
+.approval-card__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.approval-card__decision {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 13px;
+  color: #18a058;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .clarification-card {
   max-width: 680px;
   border: 1px solid rgb(var(--primary-color) / 0.18);

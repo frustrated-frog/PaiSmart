@@ -92,6 +92,7 @@ public class ChatHandler {
     // 执行查询可能包含合并后的澄清上下文；会话历史仍只保存用户本轮真实输入。
     private final Map<String, String> generationPersistedUserMessages = new ConcurrentHashMap<>();
     private final Map<String, AgentTerminalReason> generationTerminalReasons = new ConcurrentHashMap<>();
+    private final Map<String, Long> generationApprovalToolLedgerIds = new ConcurrentHashMap<>();
     // 新运行指向直接父运行；工具账本会沿此谱系回放已完成动作。
     private final Map<String, String> generationReplaySources = new ConcurrentHashMap<>();
 
@@ -605,10 +606,12 @@ public class ChatHandler {
                 toolPolicy
         );
         if (prepared.disposition() == AgentToolLedgerService.Disposition.BLOCK) {
-            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed", Map.of(
+            generationApprovalToolLedgerIds.put(generationId, prepared.ticket().getId());
+            sendToolCallStatus(userId, generationId, conversationId, toolCall, "waiting_approval", Map.of(
                     "replayPolicy", toolPolicy.replayPolicy().name(),
                     "terminalReason", AgentTerminalReason.WAITING_APPROVAL.name(),
-                    "ledgerMessage", prepared.message()
+                    "ledgerMessage", prepared.message(),
+                    "toolLedgerId", prepared.ticket().getId()
             ));
             return new ExecutedToolResult(
                     prepared.message() + "。不要重复调用该工具，请向用户说明需要确认。",
@@ -1069,13 +1072,26 @@ public class ChatHandler {
                     generationId, conversationId);
         }
         chatGenerationStateService.markCompleted(generationId, toSerializableReferenceMappings(referenceMappings));
-        agentRunService.complete(
-                generationId,
-                completeResponse,
-                completion != null ? completion.promptTokens() : 0,
-                completion != null ? completion.completionTokens() : 0,
-                generationTerminalReasons.getOrDefault(generationId, AgentTerminalReason.ANSWERED)
-        );
+        AgentTerminalReason terminalReason = generationTerminalReasons.getOrDefault(
+                generationId, AgentTerminalReason.ANSWERED);
+        if (terminalReason == AgentTerminalReason.WAITING_APPROVAL
+                && generationApprovalToolLedgerIds.containsKey(generationId)) {
+            agentRunService.waitForApproval(
+                    generationId,
+                    completeResponse,
+                    completion != null ? completion.promptTokens() : 0,
+                    completion != null ? completion.completionTokens() : 0,
+                    generationApprovalToolLedgerIds.get(generationId)
+            );
+        } else {
+            agentRunService.complete(
+                    generationId,
+                    completeResponse,
+                    completion != null ? completion.promptTokens() : 0,
+                    completion != null ? completion.completionTokens() : 0,
+                    terminalReason
+            );
+        }
         sendCompletionNotification(userId, generationId, conversationId, false, !persisted);
         logger.info("对话存储信息 - Redis键: {}, 值: {}", "user:" + userId + ":current_conversation", conversationId);
         cleanupGenerationState(generationId, null);
@@ -1105,6 +1121,7 @@ public class ChatHandler {
         generationReferenceMappings.remove(generationId);
         generationPersistedUserMessages.remove(generationId);
         generationTerminalReasons.remove(generationId);
+        generationApprovalToolLedgerIds.remove(generationId);
         agentLoopGuard.clear(generationId);
         taskLedgerService.clear(generationId);
         agentRunBudgetController.clear(generationId);

@@ -233,7 +233,7 @@ function handleToolCallPayload(assistant: Api.Chat.Message, payload: Record<stri
   const id = typeof payload.toolCallId === 'string' ? payload.toolCallId : '';
   const tool = typeof payload.tool === 'string' ? payload.tool : '';
   const status = typeof payload.status === 'string' ? payload.status : 'executing';
-  if (!tool || !['executing', 'success', 'failed'].includes(status)) {
+  if (!tool || !['executing', 'success', 'failed', 'waiting_approval'].includes(status)) {
     return;
   }
 

@@ -420,7 +420,7 @@ declare namespace Api {
     interface AgentToolEvent {
       id?: string;
       tool: string;
-      status: 'executing' | 'success' | 'failed';
+      status: 'executing' | 'success' | 'failed' | 'waiting_approval';
       timestamp?: number;
     }
 
@@ -437,6 +437,9 @@ declare namespace Api {
         sourceGenerationId?: string;
         resumeNode?: string;
         terminalReason?: string;
+        toolLedgerId?: number;
+        replayPolicy?: string;
+        ledgerMessage?: string;
         missingSlots?: string[];
         options?: string[];
         resolvedSlots?: Record<string, string>;
@@ -522,11 +525,22 @@ declare namespace Api {
       attemptNumber: number;
     }
 
+    interface AgentToolApprovalLaunch {
+      approval: {
+        generationId: string;
+        toolLedgerId: number;
+        toolName: string;
+        status: 'APPROVED' | 'REJECTED';
+        idempotent: boolean;
+      };
+      retry: AgentRetryLaunch;
+    }
+
     interface AgentRunSummary {
       generationId: string;
       conversationId: string;
       question: string;
-      status: 'FAILED' | 'INTERRUPTED' | 'CANCELLED';
+      status: 'FAILED' | 'INTERRUPTED' | 'CANCELLED' | 'WAITING_APPROVAL';
       currentStage?: string;
       errorMessage?: string;
       retryOfGenerationId?: string;

@@ -95,6 +95,45 @@ class AgentToolLedgerServiceTest {
         assertThat(prepared.ticket().getStatus()).isEqualTo("UNKNOWN");
     }
 
+    @Test
+    void executesPreviouslyApprovedActionAcrossRetryLineage() {
+        AgentToolCall source = existing("source", "fp-write", "APPROVED",
+                AgentToolRegistry.ReplayPolicy.AT_MOST_ONCE);
+        when(repository.findTopByGenerationIdAndActionFingerprintOrderByIdDesc("retry", "fp-write"))
+                .thenReturn(Optional.empty());
+        when(repository.findTopByGenerationIdAndActionFingerprintOrderByIdDesc("source", "fp-write"))
+                .thenReturn(Optional.of(source));
+
+        AgentToolLedgerService.PreparedToolCall prepared = service.prepare(
+                "retry", "source", "call-2", "submit_feedback", "fp-write",
+                Map.of("rating", "good"), writePolicy()
+        );
+
+        assertThat(prepared.disposition()).isEqualTo(AgentToolLedgerService.Disposition.EXECUTE);
+        assertThat(prepared.ticket()).isNotNull();
+        assertThat(prepared.ticket().getStatus()).isEqualTo("RUNNING");
+        assertThat(prepared.ticket().getReusedFromToolCallId()).isEqualTo(source.getId());
+    }
+
+    @Test
+    void returnsRejectedApprovalAsToolResultInsteadOfExecutingSideEffect() {
+        AgentToolCall source = existing("source", "fp-write", "REJECTED",
+                AgentToolRegistry.ReplayPolicy.AT_MOST_ONCE);
+        when(repository.findTopByGenerationIdAndActionFingerprintOrderByIdDesc("retry", "fp-write"))
+                .thenReturn(Optional.empty());
+        when(repository.findTopByGenerationIdAndActionFingerprintOrderByIdDesc("source", "fp-write"))
+                .thenReturn(Optional.of(source));
+
+        AgentToolLedgerService.PreparedToolCall prepared = service.prepare(
+                "retry", "source", "call-2", "submit_feedback", "fp-write",
+                Map.of("rating", "good"), writePolicy()
+        );
+
+        assertThat(prepared.disposition()).isEqualTo(AgentToolLedgerService.Disposition.REUSE);
+        assertThat(prepared.replayedResult().success()).isFalse();
+        assertThat(prepared.replayedResult().content()).contains("用户拒绝");
+    }
+
     private AgentToolCall existing(String generationId,
                                    String fingerprint,
                                    String status,

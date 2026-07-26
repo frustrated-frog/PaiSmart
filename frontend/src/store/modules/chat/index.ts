@@ -168,6 +168,38 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     return true;
   }
 
+  async function decideToolApproval(
+    sourceGenerationId: string,
+    toolLedgerId: number,
+    decision: 'APPROVE' | 'REJECT'
+  ) {
+    if (!sourceGenerationId || !Number.isFinite(toolLedgerId)) {
+      return false;
+    }
+    const { error, data } = await request<Api.Chat.AgentToolApprovalLaunch>({
+      url: `chat/agent-runs/${sourceGenerationId}/tool-approvals/${toolLedgerId}`,
+      method: 'POST',
+      data: { decision }
+    });
+    if (error || !data?.retry) {
+      return false;
+    }
+
+    const retry = data.retry;
+    list.value.push({
+      role: 'assistant',
+      content: '',
+      status: 'pending',
+      conversationId: retry.conversationId,
+      generationId: retry.generationId,
+      toolEvents: [],
+      agentEvents: []
+    });
+    conversationId.value = retry.conversationId;
+    await loadSessions();
+    return true;
+  }
+
   async function syncGenerationAfterReconnect() {
     const pendingGenerationId = getPendingGenerationId();
     if (pendingGenerationId) {
@@ -256,8 +288,12 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
             },
             {
               role: 'assistant',
-              content: run.errorMessage || (run.status === 'CANCELLED' ? '本次 Agent 运行已停止' : '本次 Agent 运行已中断'),
-              status: run.status === 'CANCELLED' ? 'finished' : 'error',
+              content: run.errorMessage || (
+                run.status === 'WAITING_APPROVAL'
+                  ? '该 Agent 正在等待你确认一项工具操作'
+                  : run.status === 'CANCELLED' ? '本次 Agent 运行已停止' : '本次 Agent 运行已中断'
+              ),
+              status: ['CANCELLED', 'WAITING_APPROVAL'].includes(run.status) ? 'finished' : 'error',
               conversationId: run.conversationId,
               generationId: run.generationId,
               timestamp: run.updatedAt,
@@ -513,6 +549,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     handleAuthReset,
     fetchGenerationSnapshot,
     retryAgentRun,
+    decideToolApproval,
     upsertGenerationSnapshot,
     syncGenerationAfterReconnect,
     loadSessions,

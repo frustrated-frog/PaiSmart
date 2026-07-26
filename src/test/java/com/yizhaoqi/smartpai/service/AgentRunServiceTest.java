@@ -96,7 +96,7 @@ class AgentRunServiceTest {
 
         assertThatThrownBy(() -> service.getRetryCandidate("run-1", "7"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("失败、中断或取消");
+                .hasMessageContaining("等待审批");
     }
 
     @Test
@@ -201,6 +201,34 @@ class AgentRunServiceTest {
         assertThat(run.getStatus()).isEqualTo("COMPLETED");
         assertThat(run.getTerminalReason()).isEqualTo("PARTIAL_EVIDENCE");
         verify(checkpointRepository).save(any());
+    }
+
+    @Test
+    void shouldPersistWaitingApprovalWithoutClosingRunAsCompleted() {
+        AgentRun run = run("run-approval", "7", "RUNNING");
+        when(runRepository.findById("run-approval")).thenReturn(Optional.of(run));
+
+        service.waitForApproval("run-approval", "等待确认", 12, 3, 99L);
+
+        assertThat(run.getStatus()).isEqualTo("WAITING_APPROVAL");
+        assertThat(run.getTerminalReason()).isEqualTo("WAITING_APPROVAL");
+        assertThat(run.getAnswer()).isEqualTo("等待确认");
+        assertThat(run.getPromptTokens()).isEqualTo(12);
+        assertThat(run.getCompletionTokens()).isEqualTo(3);
+        assertThat(run.getFinishedAt()).isNull();
+        verify(checkpointRepository).save(any());
+    }
+
+    @Test
+    void shouldAllowWaitingApprovalRunToResumeAsRetryLineage() {
+        AgentRun waiting = run("run-waiting", "7", "WAITING_APPROVAL");
+        when(runRepository.findById("run-waiting")).thenReturn(Optional.of(waiting));
+        when(checkpointRepository.findTopByGenerationIdOrderByIdDesc("run-waiting"))
+                .thenReturn(Optional.empty());
+
+        AgentRunService.RetryCandidate candidate = service.getRetryCandidate("run-waiting", "7");
+
+        assertThat(candidate.generationId()).isEqualTo("run-waiting");
     }
 
     private AgentRun run(String generationId, String userId, String status) {

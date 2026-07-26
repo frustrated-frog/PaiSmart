@@ -4,6 +4,7 @@ import com.yizhaoqi.smartpai.handler.ChatWebSocketHandler;
 import com.yizhaoqi.smartpai.service.AgentToolRegistry;
 import com.yizhaoqi.smartpai.service.AgentMemoryService;
 import com.yizhaoqi.smartpai.service.AgentRunService;
+import com.yizhaoqi.smartpai.service.AgentToolApprovalService;
 import com.yizhaoqi.smartpai.evaluation.RetrievalEvaluationService;
 import com.yizhaoqi.smartpai.evaluation.AgentEvaluationService;
 import com.yizhaoqi.smartpai.service.ChatGenerationStateService;
@@ -26,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.Locale;
 
 @RestController
 @RequestMapping("/api/v1/chat")
@@ -36,6 +38,7 @@ public class ChatController {
     private final AgentToolRegistry agentToolRegistry;
     private final AgentMemoryService agentMemoryService;
     private final AgentRunService agentRunService;
+    private final AgentToolApprovalService agentToolApprovalService;
     private final RetrievalEvaluationService retrievalEvaluationService;
     private final AgentEvaluationService agentEvaluationService;
     private final ChatHandler chatHandler;
@@ -45,6 +48,7 @@ public class ChatController {
                           AgentToolRegistry agentToolRegistry,
                           AgentMemoryService agentMemoryService,
                           AgentRunService agentRunService,
+                          AgentToolApprovalService agentToolApprovalService,
                           RetrievalEvaluationService retrievalEvaluationService,
                           AgentEvaluationService agentEvaluationService,
                           ChatHandler chatHandler) {
@@ -53,6 +57,7 @@ public class ChatController {
         this.agentToolRegistry = agentToolRegistry;
         this.agentMemoryService = agentMemoryService;
         this.agentRunService = agentRunService;
+        this.agentToolApprovalService = agentToolApprovalService;
         this.retrievalEvaluationService = retrievalEvaluationService;
         this.agentEvaluationService = agentEvaluationService;
         this.chatHandler = chatHandler;
@@ -162,6 +167,40 @@ public class ChatController {
         try {
             ChatHandler.RetryLaunch retry = chatHandler.retryRun(userId, generationId);
             return ResponseEntity.accepted().body(responseBody(202, "Agent 重试任务已创建", retry));
+        } catch (RateLimitExceededException exception) {
+            return ResponseEntity.status(429).body(responseBody(429, exception.getMessage(), Map.of(
+                    "retryAfterSeconds", exception.getRetryAfterSeconds()
+            )));
+        } catch (IllegalStateException exception) {
+            return ResponseEntity.status(409).body(responseBody(409, exception.getMessage(), null));
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(responseBody(400, exception.getMessage(), null));
+        }
+    }
+
+    @PostMapping("/agent-runs/{generationId}/tool-approvals/{toolLedgerId}")
+    public ResponseEntity<?> decideToolApproval(
+            @PathVariable String generationId,
+            @PathVariable long toolLedgerId,
+            @RequestHeader("Authorization") String token,
+            @RequestBody ToolApprovalRequest request) {
+        String userId = extractValidatedUserId(token);
+        if (userId == null) {
+            return ResponseEntity.status(401).body(responseBody(401, "Invalid token", null));
+        }
+        try {
+            AgentToolApprovalService.ApprovalDecision decision = AgentToolApprovalService.ApprovalDecision.valueOf(
+                    request == null || request.decision() == null
+                            ? ""
+                            : request.decision().trim().toUpperCase(Locale.ROOT)
+            );
+            AgentToolApprovalService.ApprovalResult approval = agentToolApprovalService.decide(
+                    userId, generationId, toolLedgerId, decision);
+            ChatHandler.RetryLaunch retry = chatHandler.retryRun(userId, generationId);
+            return ResponseEntity.accepted().body(responseBody(202, "工具审批已记录，Agent 已恢复执行", Map.of(
+                    "approval", approval,
+                    "retry", retry
+            )));
         } catch (RateLimitExceededException exception) {
             return ResponseEntity.status(429).body(responseBody(429, exception.getMessage(), Map.of(
                     "retryAfterSeconds", exception.getRetryAfterSeconds()
@@ -339,5 +378,8 @@ public class ChatController {
     }
 
     public record AgentEvaluationRequest(List<AgentEvaluationService.EvaluationAttempt> attempts) {
+    }
+
+    public record ToolApprovalRequest(String decision) {
     }
 }

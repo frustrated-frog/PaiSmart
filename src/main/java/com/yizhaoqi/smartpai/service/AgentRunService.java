@@ -55,6 +55,16 @@ public class AgentRunService {
 
     @Transactional
     public void startRetry(String generationId, RetryCandidate source) {
+        runRepository.findById(source.generationId())
+                .filter(run -> "WAITING_APPROVAL".equals(run.getStatus()))
+                .ifPresent(run -> {
+                    LocalDateTime now = LocalDateTime.now();
+                    run.setStatus("RESUMED");
+                    run.setCurrentStage("approval-resumed");
+                    run.setUpdatedAt(now);
+                    run.setFinishedAt(now);
+                    runRepository.save(run);
+                });
         startInternal(
                 generationId,
                 source.userId(),
@@ -117,6 +127,29 @@ public class AgentRunService {
                     "question", question == null ? "" : question,
                     "missingSlots", missingSlots == null ? List.of() : missingSlots,
                     "resumeNode", resumeNode == null ? "QUERY_PLANNING" : resumeNode
+            ));
+        });
+    }
+
+    @Transactional
+    public void waitForApproval(String generationId,
+                                String answer,
+                                int promptTokens,
+                                int completionTokens,
+                                long toolLedgerId) {
+        runRepository.findById(generationId).ifPresent(run -> {
+            run.setStatus("WAITING_APPROVAL");
+            run.setCurrentStage("approval");
+            run.setTerminalReason(AgentTerminalReason.WAITING_APPROVAL.name());
+            run.setAnswer(answer);
+            run.setPromptTokens(promptTokens);
+            run.setCompletionTokens(completionTokens);
+            run.setUpdatedAt(LocalDateTime.now());
+            run.setFinishedAt(null);
+            runRepository.save(run);
+            checkpoint(generationId, "WAITING_APPROVAL", Map.of(
+                    "toolLedgerId", toolLedgerId,
+                    "terminalReason", AgentTerminalReason.WAITING_APPROVAL.name()
             ));
         });
     }
@@ -235,8 +268,8 @@ public class AgentRunService {
         AgentRun run = runRepository.findById(generationId)
                 .filter(item -> userId.equals(item.getUserId()))
                 .orElseThrow(() -> new IllegalArgumentException("Agent 运行记录不存在"));
-        if (!List.of("FAILED", "INTERRUPTED", "CANCELLED").contains(run.getStatus())) {
-            throw new IllegalArgumentException("只有失败、中断或取消的 Agent 运行可以重试");
+        if (!List.of("FAILED", "INTERRUPTED", "CANCELLED", "WAITING_APPROVAL").contains(run.getStatus())) {
+            throw new IllegalArgumentException("只有失败、中断、取消或等待审批的 Agent 运行可以重试");
         }
         int attempt = run.getAttemptNumber() == null ? 1 : run.getAttemptNumber();
         AgentCheckpoint latest = checkpointRepository.findTopByGenerationIdOrderByIdDesc(generationId).orElse(null);
@@ -268,7 +301,8 @@ public class AgentRunService {
             return Collections.emptyList();
         }
         return runRepository.findTop50ByUserIdAndConversationIdOrderByCreatedAtAsc(userId, conversationId).stream()
-                .filter(run -> List.of("FAILED", "INTERRUPTED", "CANCELLED").contains(run.getStatus()))
+                .filter(run -> List.of("FAILED", "INTERRUPTED", "CANCELLED", "WAITING_APPROVAL")
+                        .contains(run.getStatus()))
                 .map(run -> new RunSummary(
                         run.getGenerationId(),
                         run.getConversationId(),
@@ -296,7 +330,7 @@ public class AgentRunService {
                 .toList();
 
         Map<String, Long> statusCounts = new LinkedHashMap<>();
-        for (String status : List.of("RUNNING", "WAITING_CLARIFICATION", "RESUMED", "COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED")) {
+        for (String status : List.of("RUNNING", "WAITING_CLARIFICATION", "WAITING_APPROVAL", "RESUMED", "COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED")) {
             statusCounts.put(status, 0L);
         }
         runs.forEach(run -> statusCounts.merge(run.getStatus(), 1L, Long::sum));
