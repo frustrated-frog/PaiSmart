@@ -18,6 +18,7 @@ public class AgenticRagProperties {
     private Tools tools = new Tools();
     private Context context = new Context();
     private LoopGuard loopGuard = new LoopGuard();
+    private Runtime runtime = new Runtime();
 
     @Data
     public static class QueryPlanning {
@@ -100,5 +101,14 @@ public class AgenticRagProperties {
         private int repeatWarningThreshold = 2;
         private int repeatHardLimit = 3;
         private int noProgressLimit = 2;
+    }
+
+    @Data
+    public static class Runtime {
+        private int maxModelTurns = 4;
+        private int maxToolCalls = 8;
+        private int maxPromptTokens = 24000;
+        private int maxCompletionTokens = 8000;
+        private int maxRunSeconds = 120;
     }
 }

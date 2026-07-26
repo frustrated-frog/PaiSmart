@@ -36,7 +36,6 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -53,8 +52,6 @@ public class ChatHandler {
     private static final int MAX_MATCHED_CHUNK_LEN = 800;
     private static final int MAX_EVIDENCE_SNIPPET_LEN = 160;
     private static final int GENERATION_COMPLETION_TIMEOUT_SECONDS = 120;
-    private static final int MAX_REACT_ROUNDS = 4;
-    private static final int MAX_REACT_TOOL_CALLS = 8;
     private static final int REACT_MAX_COMPLETION_TOKENS = 2000;
     private final RedisTemplate<String, String> redisTemplate;
     private final HybridSearchService searchService;
@@ -74,6 +71,8 @@ public class ChatHandler {
     private final AgentContextBudgetService contextBudgetService;
     private final AgentToolSelector agentToolSelector;
     private final AgentToolBatchExecutor agentToolBatchExecutor;
+    private final AgentRunBudgetController agentRunBudgetController;
+    private final AgentToolErrorClassifier agentToolErrorClassifier;
     private final AgentErrorSanitizer errorSanitizer;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
@@ -114,6 +113,8 @@ public class ChatHandler {
                       AgentContextBudgetService contextBudgetService,
                       AgentToolSelector agentToolSelector,
                       AgentToolBatchExecutor agentToolBatchExecutor,
+                      AgentRunBudgetController agentRunBudgetController,
+                      AgentToolErrorClassifier agentToolErrorClassifier,
                       AgentErrorSanitizer errorSanitizer,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
@@ -135,6 +136,8 @@ public class ChatHandler {
         this.contextBudgetService = contextBudgetService;
         this.agentToolSelector = agentToolSelector;
         this.agentToolBatchExecutor = agentToolBatchExecutor;
+        this.agentRunBudgetController = agentRunBudgetController;
+        this.agentToolErrorClassifier = agentToolErrorClassifier;
         this.errorSanitizer = errorSanitizer;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
@@ -282,6 +285,7 @@ public class ChatHandler {
                 "正在识别目标、上下文以及是否需要调用知识库工具", null);
 
         responseBuilders.put(generationId, new StringBuilder());
+        agentRunBudgetController.start(generationId);
         CompletableFuture<String> responseFuture = new CompletableFuture<>();
         responseFutures.put(generationId, responseFuture);
         List<Map<String, String>> history = getConversationHistory(conversationId);
@@ -401,7 +405,6 @@ public class ChatHandler {
                 history,
                 buildRecentFeedbackGuidance(userId, userMessage)
         );
-        AtomicInteger executedToolCalls = new AtomicInteger();
         int totalPromptTokens = 0;
         int totalCompletionTokens = 0;
         AgentTerminalReason forcedTerminalReason = null;
@@ -411,9 +414,16 @@ public class ChatHandler {
         );
 
         reactLoop:
-        for (int round = 1; round <= MAX_REACT_ROUNDS; round++) {
+        for (int round = 1; ; round++) {
             if (finishCancelledGeneration(generationId, responseFuture, responseBuilders.get(generationId))) {
                 return;
+            }
+            AgentRunBudgetController.BudgetDecision modelBudget = agentRunBudgetController.beforeModelTurn(generationId);
+            if (!modelBudget.allowed()) {
+                forcedTerminalReason = modelBudget.terminalReason();
+                generationTerminalReasons.put(generationId, forcedTerminalReason);
+                sendBudgetStep(userId, generationId, conversationId, modelBudget);
+                break;
             }
 
             String reasoningStepId = "reasoning-" + round;
@@ -431,6 +441,8 @@ public class ChatHandler {
             }
             totalPromptTokens += turn.promptTokens();
             totalCompletionTokens += turn.completionTokens();
+            agentRunBudgetController.recordModelUsage(
+                    generationId, turn.promptTokens(), turn.completionTokens());
 
             if (turn.toolCalls().isEmpty()) {
                 sendAgentStep(userId, generationId, conversationId,
@@ -451,17 +463,22 @@ public class ChatHandler {
                     turn.toolCalls(),
                     toolCall -> {
                         ExecutedToolResult executedToolResult;
-                        if (executedToolCalls.get() >= MAX_REACT_TOOL_CALLS) {
+                        AgentRunBudgetController.BudgetDecision toolBudget =
+                                agentRunBudgetController.beforeToolCall(generationId);
+                        if (!toolBudget.allowed()) {
                             executedToolResult = new ExecutedToolResult(
                                     "工具调用预算已用尽，本次工具未执行。请基于已有 tool 结果给出最终回答。",
                                     false,
-                                    AgentTerminalReason.TOOL_BUDGET_EXHAUSTED
+                                    toolBudget.terminalReason()
                             );
-                            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
+                            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed", Map.of(
+                                    "terminalReason", toolBudget.terminalReason().name(),
+                                    "budget", toolBudget.usage()
+                            ));
+                            sendBudgetStep(userId, generationId, conversationId, toolBudget);
                         } else {
                             executedToolResult = executeToolForReAct(
                                     userId, userMessage, generationId, conversationId, queryPlan, toolCall);
-                            executedToolCalls.incrementAndGet();
                         }
                         return AgentToolBatchExecutor.ToolExecutionOutcome.executed(
                                 executedToolResult.content(),
@@ -513,6 +530,25 @@ public class ChatHandler {
                 "reasoning-final", "reasoning", "running", "收敛最终结论",
                 "Agent 已停止继续调用工具，正在基于已有证据生成最终回答", null,
                 Map.of("terminalReason", forcedTerminalReason.name()));
+        AgentRunBudgetController.BudgetDecision finalBudget = agentRunBudgetController.beforeModelTurn(generationId);
+        if (!finalBudget.allowed()) {
+            forcedTerminalReason = finalBudget.terminalReason();
+            generationTerminalReasons.put(generationId, forcedTerminalReason);
+            sendBudgetStep(userId, generationId, conversationId, finalBudget);
+            appendStreamChunk(userId, generationId, conversationId,
+                    deterministicBudgetFallback(forcedTerminalReason));
+            sendAgentStep(userId, generationId, conversationId,
+                    "reasoning-final", "reasoning", "completed", "按预算收敛结论",
+                    "运行预算已耗尽，已使用确定性降级说明完成本次任务", null,
+                    Map.of("terminalReason", forcedTerminalReason.name(), "budget", finalBudget.usage()));
+            finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
+                    responseBuilders.get(generationId),
+                    new LlmProviderRouter.StreamCompletion(
+                            "runtime_budget_exhausted", totalPromptTokens, totalCompletionTokens,
+                            responseBuilders.get(generationId) != null ? responseBuilders.get(generationId).length() : 0
+                    ));
+            return;
+        }
         LlmProviderRouter.ReActTurn finalTurn = streamReActTurnBlocking(
                 userId, conversationId, generationId, messages, List.of());
         if (finalTurn == null) {
@@ -521,6 +557,8 @@ public class ChatHandler {
         }
         totalPromptTokens += finalTurn.promptTokens();
         totalCompletionTokens += finalTurn.completionTokens();
+        agentRunBudgetController.recordModelUsage(
+                generationId, finalTurn.promptTokens(), finalTurn.completionTokens());
         sendAgentStep(userId, generationId, conversationId,
                 "reasoning-final", "reasoning", "completed", "收敛最终结论",
                 "已完成最终回答", null);
@@ -655,7 +693,6 @@ public class ChatHandler {
             toolLedgerService.fail(toolTicket, exception);
             logger.warn("ReAct Agent Tool 执行失败，作为 tool message 返回模型: name={}, generationId={}",
                     toolCall.name(), generationId, exception);
-            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
             // generate_summary 已经把部分摘要流给前端，再让模型重写会拼出"半个旧摘要 + 新摘要"。
             // 直接以失败提示收尾，让 ReAct 循环立即 finalize，避免数据不一致。
             if ("generate_summary".equals(toolCall.name()) && summaryStreamStarted.get()) {
@@ -667,11 +704,19 @@ public class ChatHandler {
                         null
                 );
             }
-            String failedContent = "工具 " + toolCall.name() + " 执行失败: " + exception.getMessage();
+            AgentToolErrorClassifier.AgentToolError toolError = agentToolErrorClassifier.classify(exception);
+            String failedContent = formatToolError(toolError);
             AgentLoopGuard.ProgressDecision progress = agentLoopGuard.observeProgress(
                     generationId,
-                    agentLoopGuard.observationSignature(toolCall.name(), failedContent)
+                    agentLoopGuard.observationSignature(
+                            toolCall.name(), toolError.type().name() + ':' + toolError.suggestedAction())
             );
+            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed", Map.of(
+                    "errorType", toolError.type().name(),
+                    "retryable", toolError.retryable(),
+                    "suggestedAction", toolError.suggestedAction(),
+                    "retryAfterSeconds", toolError.retryAfterSeconds() == null ? 0 : toolError.retryAfterSeconds()
+            ));
             return new ExecutedToolResult(failedContent, false, progress.terminalReason());
         }
     }
@@ -714,6 +759,50 @@ public class ChatHandler {
                 ));
     }
 
+    private void sendBudgetStep(String userId,
+                                String generationId,
+                                String conversationId,
+                                AgentRunBudgetController.BudgetDecision decision) {
+        AgentRunBudgetController.BudgetUsage usage = decision.usage();
+        sendAgentStep(userId, generationId, conversationId,
+                "runtime-budget-" + decision.terminalReason().name().toLowerCase(java.util.Locale.ROOT),
+                "orchestration",
+                "completed",
+                "Agent 运行预算已收敛",
+                "已停止新增模型或工具调用，正在基于现有结果安全结束",
+                null,
+                Map.of(
+                        "terminalReason", decision.terminalReason().name(),
+                        "budget", usage
+                ));
+    }
+
+    private String deterministicBudgetFallback(AgentTerminalReason reason) {
+        return switch (reason) {
+            case TIME_BUDGET_EXHAUSTED -> "\n\n本次 Agent 运行已达到时间上限，已停止继续调用模型和工具。请缩小问题范围后重试。";
+            case TOKEN_BUDGET_EXHAUSTED -> "\n\n本次 Agent 运行已达到 Token 预算，已停止继续生成。请缩小问题范围后重试。";
+            case TOOL_BUDGET_EXHAUSTED -> "\n\n本次 Agent 运行已达到工具调用上限，已保留当前已获得的结果。";
+            default -> "\n\n本次 Agent 运行已达到决策轮数上限，已停止继续执行。";
+        };
+    }
+
+    private String formatToolError(AgentToolErrorClassifier.AgentToolError error) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", "FAILED");
+        payload.put("errorType", error.type().name());
+        payload.put("retryable", error.retryable());
+        payload.put("suggestedAction", error.suggestedAction());
+        payload.put("message", error.safeMessage());
+        if (error.retryAfterSeconds() != null) {
+            payload.put("retryAfterSeconds", error.retryAfterSeconds());
+        }
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException ignored) {
+            return "{\"status\":\"FAILED\",\"errorType\":\"INTERNAL\",\"retryable\":false}";
+        }
+    }
+
     private String extractProgressSignature(AgentToolRegistry.ToolExecutionResult toolResult,
                                             String toolName,
                                             String content) {
@@ -753,7 +842,8 @@ public class ChatHandler {
                     "当前只有部分证据。不要再调用工具；请区分已确认结论和仍缺失的信息，并保留引用。";
             case CONFLICTED_EVIDENCE ->
                     "检索结果存在冲突。不要静默选择一方；请分别列出冲突结论及其来源。";
-            case TOOL_BUDGET_EXHAUSTED, ROUND_BUDGET_EXHAUSTED, TOKEN_BUDGET_EXHAUSTED ->
+            case TOOL_BUDGET_EXHAUSTED, ROUND_BUDGET_EXHAUSTED, TOKEN_BUDGET_EXHAUSTED,
+                    TIME_BUDGET_EXHAUSTED ->
                     "Agent 执行预算已用尽。不要再调用工具，直接基于已有工具结果给出最终回答并说明限制。";
             default -> "请不要再调用工具，直接基于已有证据给出最终回答。";
         };
@@ -1017,6 +1107,7 @@ public class ChatHandler {
         generationTerminalReasons.remove(generationId);
         agentLoopGuard.clear(generationId);
         taskLedgerService.clear(generationId);
+        agentRunBudgetController.clear(generationId);
         generationReplaySources.remove(generationId);
         stopFlags.remove(generationId);
         activeStreams.remove(generationId);

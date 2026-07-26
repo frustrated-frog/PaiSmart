@@ -299,6 +299,12 @@ agentic-rag:
     repeat-warning-threshold: ${AGENT_LOOP_REPEAT_WARNING_THRESHOLD:2}
     repeat-hard-limit: ${AGENT_LOOP_REPEAT_HARD_LIMIT:3}
     no-progress-limit: ${AGENT_LOOP_NO_PROGRESS_LIMIT:2}
+  runtime:
+    max-model-turns: ${AGENT_RUNTIME_MAX_MODEL_TURNS:4}
+    max-tool-calls: ${AGENT_RUNTIME_MAX_TOOL_CALLS:8}
+    max-prompt-tokens: ${AGENT_RUNTIME_MAX_PROMPT_TOKENS:24000}
+    max-completion-tokens: ${AGENT_RUNTIME_MAX_COMPLETION_TOKENS:8000}
+    max-run-seconds: ${AGENT_RUNTIME_MAX_RUN_SECONDS:120}
 
 # 微信支付相关配置
 wx:
