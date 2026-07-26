@@ -1,4 +1,4 @@
-import type { CustomRoute, ElegantConstRoute, ElegantRoute } from '@elegant-router/types';
+import type { ElegantConstRoute, ElegantRoute } from '@elegant-router/types';
 import { generatedRoutes } from '../elegant/routes';
 import { layouts, views } from '../elegant/imports';
 import { transformElegantRoutesToVueRoutes } from '../elegant/transform';
@@ -8,7 +8,7 @@ import { transformElegantRoutesToVueRoutes } from '../elegant/transform';
  *
  * @link https://github.com/soybeanjs/elegant-router?tab=readme-ov-file#custom-route
  */
-const customRoutes: CustomRoute[] = [
+const customRoutes: ElegantRoute[] = [
   {
     name: 'login',
     path: '/login/:module(pwd-login|code-login|register|reset-pwd|bind-wechat)?',
@@ -29,7 +29,7 @@ export function createStaticRoutes() {
 
   const authRoutes: ElegantRoute[] = [];
 
-  const customRouteNames = new Set(customRoutes.map(route => route.name));
+  const customRouteNames = new Set<string>(customRoutes.map(route => route.name));
   const normalizedRoutes = [...generatedRoutes.filter(route => !customRouteNames.has(route.name)), ...customRoutes];
 
   normalizedRoutes.forEach(item => {

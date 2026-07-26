@@ -23,7 +23,7 @@ html {
   --zs-ink-secondary: #5f6b7c;
   --zs-border: rgb(23 32 51 / 10%);
   --zs-shadow-workspace: 0 18px 44px rgb(33 43 69 / 8%);
-  font-family: Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: Inter, 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-synthesis: none;
   text-rendering: optimizelegibility;
 }
@@ -50,7 +50,7 @@ h1,
 h2,
 h3,
 .zs-display-type {
-  font-family: "Avenir Next", "SF Pro Display", "PingFang SC", sans-serif;
+  font-family: 'Avenir Next', 'SF Pro Display', 'PingFang SC', sans-serif;
 }
 
 button,
