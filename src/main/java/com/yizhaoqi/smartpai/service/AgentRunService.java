@@ -35,17 +35,20 @@ public class AgentRunService {
     private final AgentCheckpointRepository checkpointRepository;
     private final ObjectMapper objectMapper;
     private final AgentErrorSanitizer errorSanitizer;
+    private final AgentRuntimeStateService runtimeStateService;
 
     public AgentRunService(AgentRunRepository runRepository,
                            AgentStepRepository stepRepository,
                            AgentCheckpointRepository checkpointRepository,
                            ObjectMapper objectMapper,
-                           AgentErrorSanitizer errorSanitizer) {
+                           AgentErrorSanitizer errorSanitizer,
+                           AgentRuntimeStateService runtimeStateService) {
         this.runRepository = runRepository;
         this.stepRepository = stepRepository;
         this.checkpointRepository = checkpointRepository;
         this.objectMapper = objectMapper;
         this.errorSanitizer = errorSanitizer;
+        this.runtimeStateService = runtimeStateService;
     }
 
     @Transactional
@@ -64,6 +67,8 @@ public class AgentRunService {
                     run.setUpdatedAt(now);
                     run.setFinishedAt(now);
                     runRepository.save(run);
+                    runtimeStateService.transition(run.getGenerationId(), "RESUMED",
+                            "approval-resumed", null, Map.of(), Map.of());
                 });
         startInternal(
                 generationId,
@@ -96,6 +101,8 @@ public class AgentRunService {
         source.setUpdatedAt(now);
         source.setFinishedAt(now);
         runRepository.save(source);
+        runtimeStateService.transition(sourceGenerationId, "RESUMED",
+                "clarification-resumed", null, Map.of(), Map.of());
 
         int nextAttempt = (source.getAttemptNumber() == null ? 1 : source.getAttemptNumber()) + 1;
         Long resumedCheckpointId = checkpointRepository.findTopByGenerationIdOrderByIdDesc(sourceGenerationId)
@@ -122,6 +129,8 @@ public class AgentRunService {
             run.setTerminalReason(AgentTerminalReason.WAITING_CLARIFICATION.name());
             run.setUpdatedAt(LocalDateTime.now());
             runRepository.save(run);
+            runtimeStateService.transition(generationId, "WAITING_CLARIFICATION",
+                    "clarification", AgentTerminalReason.WAITING_CLARIFICATION.name(), Map.of(), Map.of());
             checkpoint(generationId, "WAITING_CLARIFICATION", Map.of(
                     "pendingTaskId", pendingTaskId,
                     "question", question == null ? "" : question,
@@ -147,6 +156,8 @@ public class AgentRunService {
             run.setUpdatedAt(LocalDateTime.now());
             run.setFinishedAt(null);
             runRepository.save(run);
+            runtimeStateService.transition(generationId, "WAITING_APPROVAL",
+                    "approval", AgentTerminalReason.WAITING_APPROVAL.name(), Map.of(), Map.of());
             checkpoint(generationId, "WAITING_APPROVAL", Map.of(
                     "toolLedgerId", toolLedgerId,
                     "terminalReason", AgentTerminalReason.WAITING_APPROVAL.name()
@@ -178,6 +189,7 @@ public class AgentRunService {
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
         runRepository.save(run);
+        runtimeStateService.transition(generationId, "RUNNING", "intake", null, Map.of(), Map.of());
         Map<String, Object> initialState = new LinkedHashMap<>();
         initialState.put("question", question);
         initialState.put("attemptNumber", attemptNumber);
@@ -219,6 +231,7 @@ public class AgentRunService {
         run.setCurrentStage(stage);
         run.setUpdatedAt(LocalDateTime.now());
         runRepository.save(run);
+        runtimeStateService.transition(generationId, "RUNNING", stage, null, Map.of(), Map.of());
         if ("completed".equalsIgnoreCase(status) || "failed".equalsIgnoreCase(status)) {
             checkpoint(generationId, "STEP_TERMINAL", Map.of(
                     "stepId", stepId,
@@ -406,6 +419,8 @@ public class AgentRunService {
             run.setUpdatedAt(now);
             run.setFinishedAt(now);
             runRepository.save(run);
+            runtimeStateService.transition(run.getGenerationId(), "INTERRUPTED",
+                    run.getCurrentStage(), AgentTerminalReason.RETRYABLE_FAILURE.name(), Map.of(), Map.of());
             checkpoint(run.getGenerationId(), "RECOVERY_REQUIRED", Map.of(
                     "lastStage", run.getCurrentStage() == null ? "unknown" : run.getCurrentStage(),
                     "reason", "PROCESS_RESTART"
@@ -432,6 +447,8 @@ public class AgentRunService {
             run.setUpdatedAt(LocalDateTime.now());
             run.setFinishedAt(LocalDateTime.now());
             runRepository.save(run);
+            runtimeStateService.transition(generationId, status, run.getCurrentStage(),
+                    terminalReason.name(), Map.of(), Map.of());
             checkpoint(generationId, "RUN_" + status, Map.of(
                     "status", status,
                     "answerChars", answer == null ? 0 : answer.length(),

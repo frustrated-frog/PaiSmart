@@ -35,6 +35,8 @@ class AgentRunServiceTest {
     private AgentStepRepository stepRepository;
     @Mock
     private AgentCheckpointRepository checkpointRepository;
+    @Mock
+    private AgentRuntimeStateService runtimeStateService;
 
     private AgentRunService service;
 
@@ -45,7 +47,8 @@ class AgentRunServiceTest {
                 stepRepository,
                 checkpointRepository,
                 new ObjectMapper(),
-                new AgentErrorSanitizer()
+                new AgentErrorSanitizer(),
+                runtimeStateService
         );
     }
 
