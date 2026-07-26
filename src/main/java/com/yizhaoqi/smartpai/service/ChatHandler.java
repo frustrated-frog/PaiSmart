@@ -36,6 +36,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -72,6 +73,7 @@ public class ChatHandler {
     private final AgentMemoryService agentMemoryService;
     private final AgentContextBudgetService contextBudgetService;
     private final AgentToolSelector agentToolSelector;
+    private final AgentToolBatchExecutor agentToolBatchExecutor;
     private final AgentErrorSanitizer errorSanitizer;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
@@ -111,6 +113,7 @@ public class ChatHandler {
                       AgentMemoryService agentMemoryService,
                       AgentContextBudgetService contextBudgetService,
                       AgentToolSelector agentToolSelector,
+                      AgentToolBatchExecutor agentToolBatchExecutor,
                       AgentErrorSanitizer errorSanitizer,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
@@ -131,6 +134,7 @@ public class ChatHandler {
         this.agentMemoryService = agentMemoryService;
         this.contextBudgetService = contextBudgetService;
         this.agentToolSelector = agentToolSelector;
+        this.agentToolBatchExecutor = agentToolBatchExecutor;
         this.errorSanitizer = errorSanitizer;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
@@ -397,7 +401,7 @@ public class ChatHandler {
                 history,
                 buildRecentFeedbackGuidance(userId, userMessage)
         );
-        int executedToolCalls = 0;
+        AtomicInteger executedToolCalls = new AtomicInteger();
         int totalPromptTokens = 0;
         int totalCompletionTokens = 0;
         AgentTerminalReason forcedTerminalReason = null;
@@ -443,39 +447,56 @@ public class ChatHandler {
                     "已规划 " + turn.toolCalls().size() + " 个工具动作", null);
 
             messages.add(turn.assistantMessage());
-            for (LlmProviderRouter.ToolCallDecision toolCall : turn.toolCalls()) {
-                ExecutedToolResult executedToolResult;
-                if (executedToolCalls >= MAX_REACT_TOOL_CALLS) {
-                    executedToolResult = new ExecutedToolResult(
-                            "工具调用预算已用尽，本次工具未执行。请基于已有 tool 结果给出最终回答。",
-                            false,
-                            AgentTerminalReason.TOOL_BUDGET_EXHAUSTED
-                    );
-                    sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
-                } else {
-                    executedToolResult = executeToolForReAct(
-                            userId, userMessage, generationId, conversationId, queryPlan, toolCall);
-                    executedToolCalls++;
+            AgentToolBatchExecutor.BatchResult batchResult = agentToolBatchExecutor.execute(
+                    turn.toolCalls(),
+                    toolCall -> {
+                        ExecutedToolResult executedToolResult;
+                        if (executedToolCalls.get() >= MAX_REACT_TOOL_CALLS) {
+                            executedToolResult = new ExecutedToolResult(
+                                    "工具调用预算已用尽，本次工具未执行。请基于已有 tool 结果给出最终回答。",
+                                    false,
+                                    AgentTerminalReason.TOOL_BUDGET_EXHAUSTED
+                            );
+                            sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
+                        } else {
+                            executedToolResult = executeToolForReAct(
+                                    userId, userMessage, generationId, conversationId, queryPlan, toolCall);
+                            executedToolCalls.incrementAndGet();
+                        }
+                        return AgentToolBatchExecutor.ToolExecutionOutcome.executed(
+                                executedToolResult.content(),
+                                executedToolResult.streamedToUser(),
+                                executedToolResult.terminalReason()
+                        );
+                    });
+            for (AgentToolBatchExecutor.BatchOutcome outcome : batchResult.outcomes()) {
+                messages.add(toolMessage(outcome.call().id(), outcome.content()));
+                if (outcome.status() == AgentToolBatchExecutor.OutcomeStatus.CANCELLED_BY_RUNTIME) {
+                    sendToolCallStatus(userId, generationId, conversationId, outcome.call(), "failed", Map.of(
+                            "cancelledByRuntime", true,
+                            "terminalReason", batchResult.terminalReason() == null
+                                    ? AgentTerminalReason.ANSWERED.name()
+                                    : batchResult.terminalReason().name()
+                    ));
                 }
-                messages.add(toolMessage(toolCall.id(), executedToolResult.content()));
-                if (executedToolResult.terminalReason() != null) {
-                    forcedTerminalReason = executedToolResult.terminalReason();
-                    generationTerminalReasons.put(generationId, forcedTerminalReason);
-                }
-                if (executedToolResult.streamedToUser()) {
-                    finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
-                            responseBuilders.get(generationId),
-                            new LlmProviderRouter.StreamCompletion(
-                                    "tool_streamed",
-                                    totalPromptTokens,
-                                    totalCompletionTokens,
-                                    responseBuilders.get(generationId) != null ? responseBuilders.get(generationId).length() : 0
-                            ));
-                    return;
-                }
-                if (forcedTerminalReason != null) {
-                    break reactLoop;
-                }
+            }
+            if (batchResult.terminalReason() != null) {
+                forcedTerminalReason = batchResult.terminalReason();
+                generationTerminalReasons.put(generationId, forcedTerminalReason);
+            }
+            if (batchResult.streamedToUser()) {
+                finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
+                        responseBuilders.get(generationId),
+                        new LlmProviderRouter.StreamCompletion(
+                                "tool_streamed",
+                                totalPromptTokens,
+                                totalCompletionTokens,
+                                responseBuilders.get(generationId) != null ? responseBuilders.get(generationId).length() : 0
+                        ));
+                return;
+            }
+            if (forcedTerminalReason != null) {
+                break reactLoop;
             }
         }
 
