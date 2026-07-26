@@ -11,3 +11,71 @@ body,
 html {
   overflow-x: hidden;
 }
+
+:root {
+  --zs-knowledge-indigo: #5657d9;
+  --zs-signal-cyan: #0891b2;
+  --zs-evidence-emerald: #059669;
+  --zs-surface-canvas: #f5f7fb;
+  --zs-surface-panel: #ffffff;
+  --zs-surface-muted: #eef1f7;
+  --zs-ink-primary: #172033;
+  --zs-ink-secondary: #5f6b7c;
+  --zs-border: rgb(23 32 51 / 10%);
+  --zs-shadow-workspace: 0 18px 44px rgb(33 43 69 / 8%);
+  font-family: Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizelegibility;
+}
+
+html.dark {
+  --zs-knowledge-indigo: #8b8cff;
+  --zs-signal-cyan: #22d3ee;
+  --zs-evidence-emerald: #34d399;
+  --zs-surface-canvas: #111318;
+  --zs-surface-panel: #191c22;
+  --zs-surface-muted: #20242c;
+  --zs-ink-primary: #eef2ff;
+  --zs-ink-secondary: #98a2b3;
+  --zs-border: rgb(255 255 255 / 8%);
+  --zs-shadow-workspace: 0 22px 48px rgb(0 0 0 / 28%);
+}
+
+body {
+  color: var(--zs-ink-primary);
+  background: var(--zs-surface-canvas);
+}
+
+h1,
+h2,
+h3,
+.zs-display-type {
+  font-family: "Avenir Next", "SF Pro Display", "PingFang SC", sans-serif;
+}
+
+button,
+a,
+input,
+textarea,
+[tabindex] {
+  outline: none;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  box-shadow: 0 0 0 3px rgb(86 87 217 / 20%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
