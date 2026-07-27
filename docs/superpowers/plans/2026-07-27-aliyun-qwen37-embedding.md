@@ -16,6 +16,7 @@
 - Modify: `src/main/resources/application.yml`
 - Modify: `src/main/resources/application-dev.yml`
 - Modify: `src/main/resources/application-docker.yml`
+- Modify locally: `.env`（Git 忽略）
 
 - [ ] **Step 1: 更新默认配置**
 
@@ -29,7 +30,11 @@
 
   使用与默认配置完全相同的四项值，保证不同 profile 行为一致。
 
-- [ ] **Step 4: 静态校验**
+- [ ] **Step 4: 同步本地 `.env`**
+
+  将 `EMBEDDING_API_URL`、`EMBEDDING_API_MODEL` 和 `EMBEDDING_API_KEY` 同步为本次配置，避免高优先级的 `paismartDotenv` 属性源覆盖 YAML。
+
+- [ ] **Step 5: 静态校验**
 
   Run: `git diff --check && rg -n 'qwen3\.7-text-embedding|llm-33f9u44cujsi4b1d' src/main/resources/application*.yml`
 

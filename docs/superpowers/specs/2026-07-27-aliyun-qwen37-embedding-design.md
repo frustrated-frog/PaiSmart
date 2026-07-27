@@ -11,6 +11,7 @@
 - 模型固定为 `qwen3.7-text-embedding`。
 - 向量维度保持 `2048`，兼容当前应用配置与现有 Elasticsearch 向量映射。
 - API Key 使用用户本次提供的值直接写入三个后端 YAML 配置，但不在设计或计划文档中重复记录。
+- 同步更新被 Git 忽略的本地 `.env`；该文件由自定义 `DotenvEnvironmentPostProcessor` 以高于 YAML 的优先级加载，否则旧的本地值会覆盖硬编码配置。
 - 保留现有 `ModelProviderConfigService` 和后台供应商管理逻辑；若本地数据库存在阿里云 Embedding 覆盖记录，则将该记录同步为相同配置，避免数据库优先级导致 YAML 未生效。
 
 ## 变更范围
@@ -18,6 +19,7 @@
 - `src/main/resources/application.yml`
 - `src/main/resources/application-dev.yml`
 - `src/main/resources/application-docker.yml`
+- 本地 `.env`（Git 忽略）
 - 本地 MySQL 的 `model_provider_configs` 表（仅在存在对应覆盖记录时同步，不新增迁移文件）
 
 不修改 Embedding 客户端、Elasticsearch 映射、前端或其他模型供应商。
