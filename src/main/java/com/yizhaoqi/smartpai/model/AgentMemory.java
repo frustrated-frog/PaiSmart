@@ -46,11 +46,11 @@ public class AgentMemory {
     private String memoryKey;
 
     @Lob
-    @Column(name = "content", nullable = false)
+    @Column(name = "content", nullable = false, columnDefinition = "LONGTEXT")
     private String content;
 
     @Lob
-    @Column(name = "source_query")
+    @Column(name = "source_query", columnDefinition = "LONGTEXT")
     private String sourceQuery;
 
     @Column(name = "source_type", nullable = false, length = 32)

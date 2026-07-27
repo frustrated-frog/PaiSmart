@@ -12,6 +12,8 @@ public interface DocumentParentChunkRepository extends JpaRepository<DocumentPar
 
     List<DocumentParentChunk> findByFileMd5OrderByParentIndexAsc(String fileMd5);
 
+    long countByFileMd5(String fileMd5);
+
     @Transactional
     @Modifying
     @Query(value = "DELETE FROM document_parent_chunks WHERE file_md5 = ?1", nativeQuery = true)

@@ -76,3 +76,7 @@ frontend/AutoClaw.pem
 *.pem
 src/main/resources/cert
 /.runtime
+
+# Local browser verification artifacts
+/.playwright-cli/
+/output/

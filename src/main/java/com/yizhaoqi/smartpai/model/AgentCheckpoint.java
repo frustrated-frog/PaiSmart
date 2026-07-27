@@ -29,7 +29,7 @@ public class AgentCheckpoint {
     private String checkpointType;
 
     @Lob
-    @Column(name = "state_json", nullable = false)
+    @Column(name = "state_json", nullable = false, columnDefinition = "LONGTEXT")
     private String stateJson;
 
     @Column(name = "created_at", nullable = false)

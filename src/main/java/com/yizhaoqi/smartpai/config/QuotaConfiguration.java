@@ -30,9 +30,15 @@ public class QuotaConfiguration {
      */
     @Bean
     public UsageQuotaService usageQuotaService(StringRedisTemplate stringRedisTemplate,
-                                               UserTokenService userTokenService) {
+                                               UserTokenService userTokenService,
+                                               UserRepository userRepository) {
         if (usageQuotaProperties.isUseUserTokenBalance()) {
-            return new UsageBalanceQuotaService(stringRedisTemplate, usageQuotaProperties, userTokenService);
+            return new UsageBalanceQuotaService(
+                    stringRedisTemplate,
+                    usageQuotaProperties,
+                    userTokenService,
+                    userRepository
+            );
         } else {
             return new UsageQuotaService(stringRedisTemplate, usageQuotaProperties);
         }

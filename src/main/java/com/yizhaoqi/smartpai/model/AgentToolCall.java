@@ -59,19 +59,19 @@ public class AgentToolCall {
     private String status;
 
     @Lob
-    @Column(name = "arguments_json", nullable = false)
+    @Column(name = "arguments_json", nullable = false, columnDefinition = "LONGTEXT")
     private String argumentsJson;
 
     @Lob
-    @Column(name = "result_content")
+    @Column(name = "result_content", columnDefinition = "LONGTEXT")
     private String resultContent;
 
     @Lob
-    @Column(name = "result_data_json")
+    @Column(name = "result_data_json", columnDefinition = "LONGTEXT")
     private String resultDataJson;
 
     @Lob
-    @Column(name = "error_message")
+    @Column(name = "error_message", columnDefinition = "LONGTEXT")
     private String errorMessage;
 
     @Column(name = "reused_from_tool_call_id")

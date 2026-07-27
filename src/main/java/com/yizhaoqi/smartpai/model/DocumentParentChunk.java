@@ -39,7 +39,7 @@ public class DocumentParentChunk {
     private Integer parentIndex;
 
     @Lob
-    @Column(name = "text_content", nullable = false)
+    @Column(name = "text_content", nullable = false, columnDefinition = "LONGTEXT")
     private String textContent;
 
     @Column(name = "page_number")

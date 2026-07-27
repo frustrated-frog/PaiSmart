@@ -40,14 +40,14 @@ public class AgentStep {
     private String title;
 
     @Lob
-    @Column(name = "detail")
+    @Column(name = "detail", columnDefinition = "LONGTEXT")
     private String detail;
 
     @Column(name = "tool_name", length = 128)
     private String toolName;
 
     @Lob
-    @Column(name = "metadata_json")
+    @Column(name = "metadata_json", columnDefinition = "LONGTEXT")
     private String metadataJson;
 
     @Column(name = "occurred_at", nullable = false)

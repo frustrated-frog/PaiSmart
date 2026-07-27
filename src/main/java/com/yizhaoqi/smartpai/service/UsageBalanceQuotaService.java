@@ -4,7 +4,9 @@ import com.yizhaoqi.smartpai.config.UsageQuotaProperties;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
 import com.yizhaoqi.smartpai.model.DailyReqCountStat;
 import com.yizhaoqi.smartpai.model.DailyUsageStat;
+import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.model.UserTokenRecord;
+import com.yizhaoqi.smartpai.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -25,17 +27,20 @@ public class UsageBalanceQuotaService extends UsageQuotaService {
     private static final DateTimeFormatter DAY_FORMATTER = DateTimeFormatter.ISO_LOCAL_DATE;
 
     private final UserTokenService userTokenService;
+    private final UserRepository userRepository;
 
     public UsageBalanceQuotaService(StringRedisTemplate stringRedisTemplate,
                                     UsageQuotaProperties properties,
-                                    UserTokenService userTokenService
+                                    UserTokenService userTokenService,
+                                    UserRepository userRepository
     ) {
         super(stringRedisTemplate, properties);
         this.userTokenService = userTokenService;
+        this.userRepository = userRepository;
     }
 
     public TokenReservation reserveLlmTokens(String userId, int estimatedPromptTokens, int maxCompletionTokens) {
-        if (!isQuotaManaged(userId)) {
+        if (!isQuotaManaged(userId) || shouldBypassInternalQuota(userId)) {
             return TokenReservation.noop("llm", userId);
         }
 
@@ -59,7 +64,7 @@ public class UsageBalanceQuotaService extends UsageQuotaService {
     }
 
     public TokenReservation reserveEmbeddingTokens(String userId, List<String> texts) {
-        if (!isQuotaManaged(userId)) {
+        if (!isQuotaManaged(userId) || shouldBypassInternalQuota(userId)) {
             return TokenReservation.noop("embedding", userId);
         }
 
@@ -80,17 +85,92 @@ public class UsageBalanceQuotaService extends UsageQuotaService {
         );
     }
 
+    @Override
+    public TokenReservationBundle reserveLlmTokensWithGlobalBudget(
+            String userId,
+            int estimatedPromptTokens,
+            int maxCompletionTokens,
+            long minuteLimit,
+            long minuteWindowSeconds,
+            long dayLimit,
+            long dayWindowSeconds
+    ) {
+        if (shouldBypassInternalQuota(userId)) {
+            return TokenReservationBundle.noop("llm", userId);
+        }
+        return super.reserveLlmTokensWithGlobalBudget(
+                userId,
+                estimatedPromptTokens,
+                maxCompletionTokens,
+                minuteLimit,
+                minuteWindowSeconds,
+                dayLimit,
+                dayWindowSeconds
+        );
+    }
+
+    @Override
+    public TokenReservationBundle reserveEmbeddingTokensWithGlobalBudget(
+            String userId,
+            List<String> texts,
+            String budgetScope,
+            String minuteExceededMessage,
+            String dayExceededMessage,
+            long minuteLimit,
+            long minuteWindowSeconds,
+            long dayLimit,
+            long dayWindowSeconds
+    ) {
+        if (shouldBypassInternalQuota(userId)) {
+            return TokenReservationBundle.noop(budgetScope, userId);
+        }
+        return super.reserveEmbeddingTokensWithGlobalBudget(
+                userId,
+                texts,
+                budgetScope,
+                minuteExceededMessage,
+                dayExceededMessage,
+                minuteLimit,
+                minuteWindowSeconds,
+                dayLimit,
+                dayWindowSeconds
+        );
+    }
+
     /**
      * 记录用户聊天请求次数
      * @param userId
      */
     @Transactional(rollbackFor = Exception.class)
     public void recordChatRequest(String userId) {
-        if (!isQuotaManaged(userId)) {
+        if (!isQuotaManaged(userId) || shouldBypassInternalQuota(userId)) {
             return;
         }
 
         userTokenService.updateUserDailyChatCount(userId, LocalDate.now());
+    }
+
+    private boolean shouldBypassInternalQuota(String userId) {
+        UsageQuotaProperties.LocalAdminBypass bypass = properties.getLocalAdminBypass();
+        if (bypass == null || !bypass.isEnabled() || userId == null || userId.isBlank()) {
+            return false;
+        }
+
+        String configuredUsername = bypass.getUsername();
+        if (configuredUsername == null || configuredUsername.isBlank()) {
+            return false;
+        }
+
+        try {
+            return userRepository.findById(Long.parseLong(userId))
+                    .filter(user -> configuredUsername.equals(user.getUsername()))
+                    .map(User::getRole)
+                    .filter(User.Role.ADMIN::equals)
+                    .isPresent();
+        } catch (NumberFormatException exception) {
+            logger.debug("用户 ID 不是数字，不能应用本地管理员额度绕过: {}", userId);
+            return false;
+        }
     }
 
     /**

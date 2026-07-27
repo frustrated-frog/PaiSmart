@@ -53,22 +53,27 @@ public class FileProcessingConsumer {
 
         InputStream fileStream = null;
         try {
-            // 下载文件
-            fileStream = downloadFileFromStorage(task.getFilePath());
-            // 在 downloadFileFromStorage 返回后立即检查流是否可读
-            if (fileStream == null) {
-                throw new IOException("流为空");
-            }
+            boolean parsingRequired = documentService.prepareUploadParsing(task.getFileMd5());
+            if (parsingRequired) {
+                // 下载文件
+                fileStream = downloadFileFromStorage(task.getFilePath());
+                // 在 downloadFileFromStorage 返回后立即检查流是否可读
+                if (fileStream == null) {
+                    throw new IOException("流为空");
+                }
 
-            // 强制转换为可缓存流
-            if (!fileStream.markSupported()) {
-                fileStream = new BufferedInputStream(fileStream);
-            }
+                // 强制转换为可缓存流
+                if (!fileStream.markSupported()) {
+                    fileStream = new BufferedInputStream(fileStream);
+                }
 
-            // 解析文件
-            parseService.parseAndSave(task.getFileMd5(), fileStream, 
-                    task.getUserId(), task.getOrgTag(), task.isPublic());
-            log.info("文件解析完成，fileMd5: {}", task.getFileMd5());
+                // 解析文件
+                parseService.parseAndSave(task.getFileMd5(), fileStream,
+                        task.getUserId(), task.getOrgTag(), task.isPublic());
+                log.info("文件解析完成，fileMd5: {}", task.getFileMd5());
+            } else {
+                log.info("复用已完整解析的文档切片，仅重试向量化，fileMd5: {}", task.getFileMd5());
+            }
 
             // 向量化处理
             VectorizationService.VectorizationUsageResult vectorizationResult = vectorizationService.vectorizeWithUsage(

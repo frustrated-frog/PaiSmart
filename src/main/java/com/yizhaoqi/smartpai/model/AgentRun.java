@@ -31,7 +31,7 @@ public class AgentRun {
     private String conversationId;
 
     @Lob
-    @Column(name = "question", nullable = false)
+    @Column(name = "question", nullable = false, columnDefinition = "LONGTEXT")
     private String question;
 
     @Column(name = "status", nullable = false, length = 24)
@@ -53,11 +53,11 @@ public class AgentRun {
     private Integer attemptNumber = 1;
 
     @Lob
-    @Column(name = "answer")
+    @Column(name = "answer", columnDefinition = "LONGTEXT")
     private String answer;
 
     @Lob
-    @Column(name = "error_message")
+    @Column(name = "error_message", columnDefinition = "LONGTEXT")
     private String errorMessage;
 
     @Column(name = "prompt_tokens", nullable = false)

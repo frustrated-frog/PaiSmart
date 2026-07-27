@@ -37,26 +37,26 @@ public class AgentPendingTask {
     private String status;
 
     @Lob
-    @Column(name = "original_query", nullable = false)
+    @Column(name = "original_query", nullable = false, columnDefinition = "LONGTEXT")
     private String originalQuery;
 
     @Column(name = "intent", nullable = false, length = 32)
     private String intent;
 
     @Lob
-    @Column(name = "known_slots_json", nullable = false)
+    @Column(name = "known_slots_json", nullable = false, columnDefinition = "LONGTEXT")
     private String knownSlotsJson;
 
     @Lob
-    @Column(name = "missing_slots_json", nullable = false)
+    @Column(name = "missing_slots_json", nullable = false, columnDefinition = "LONGTEXT")
     private String missingSlotsJson;
 
     @Lob
-    @Column(name = "question", nullable = false)
+    @Column(name = "question", nullable = false, columnDefinition = "LONGTEXT")
     private String question;
 
     @Lob
-    @Column(name = "options_json", nullable = false)
+    @Column(name = "options_json", nullable = false, columnDefinition = "LONGTEXT")
     private String optionsJson;
 
     @Column(name = "resume_node", nullable = false, length = 64)

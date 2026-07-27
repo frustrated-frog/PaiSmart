@@ -189,6 +189,52 @@ public class DocumentService {
     }
 
     @Transactional
+    public boolean prepareUploadParsing(String fileMd5) {
+        FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
+                .orElseThrow(() -> new RuntimeException("文件不存在"));
+
+        Integer expectedChunkCount = fileUpload.getEstimatedChunkCount();
+        long actualChunkCount = documentVectorRepository.countByFileMd5(fileMd5);
+        long parentChunkCount = documentParentChunkRepository.countByFileMd5(fileMd5);
+        boolean parsingComplete = expectedChunkCount != null
+                && expectedChunkCount > 0
+                && actualChunkCount == expectedChunkCount
+                && parentChunkCount > 0;
+
+        if (parsingComplete) {
+            logger.info(
+                    "检测到完整解析结果，复用已有切片: fileMd5={}, expectedChunks={}, actualChunks={}, parentChunks={}",
+                    fileMd5,
+                    expectedChunkCount,
+                    actualChunkCount,
+                    parentChunkCount
+            );
+            return false;
+        }
+
+        if (actualChunkCount > 0 || parentChunkCount > 0) {
+            logger.warn(
+                    "检测到残缺解析结果，重新解析前清理: fileMd5={}, expectedChunks={}, actualChunks={}, parentChunks={}",
+                    fileMd5,
+                    expectedChunkCount,
+                    actualChunkCount,
+                    parentChunkCount
+            );
+            try {
+                elasticsearchService.deleteByFileMd5(fileMd5);
+            } catch (Exception exception) {
+                logger.warn("清理残缺解析结果时删除 Elasticsearch 文档失败: fileMd5={}, error={}",
+                        fileMd5, exception.getMessage());
+            }
+            documentVectorRepository.deleteByFileMd5(fileMd5);
+            documentParentChunkRepository.deleteByFileMd5(fileMd5);
+            invalidatePdfSinglePagePreviewCache(fileMd5);
+        }
+
+        return true;
+    }
+
+    @Transactional
     public VectorizationService.VectorizationUsageResult reindexDocument(String fileMd5, String requesterId) {
         logger.info("开始重建文档索引: fileMd5={}, requesterId={}", fileMd5, requesterId);
 
@@ -197,25 +243,28 @@ public class DocumentService {
 
         markVectorizationProcessing(fileUpload, true);
 
-        try (InputStream fileStream = uploadService.getMergedFileStream(fileMd5)) {
+        try {
+            boolean parsingRequired = prepareUploadParsing(fileMd5);
+            if (parsingRequired) {
+                try (InputStream fileStream = uploadService.getMergedFileStream(fileMd5)) {
+                    parseService.parseAndSave(
+                            fileMd5,
+                            fileStream,
+                            fileUpload.getUserId(),
+                            fileUpload.getOrgTag(),
+                            fileUpload.isPublic()
+                    );
+                }
+            } else {
+                logger.info("重建索引时复用已完整解析的文档切片: fileMd5={}", fileMd5);
+            }
+
             try {
                 elasticsearchService.deleteByFileMd5(fileMd5);
                 logger.info("重建前已清理 Elasticsearch 文档: {}", fileMd5);
             } catch (Exception e) {
                 logger.warn("重建前清理 Elasticsearch 失败: fileMd5={}, error={}", fileMd5, e.getMessage());
             }
-
-            documentVectorRepository.deleteByFileMd5(fileMd5);
-            documentParentChunkRepository.deleteByFileMd5(fileMd5);
-            invalidatePdfSinglePagePreviewCache(fileMd5);
-
-            parseService.parseAndSave(
-                    fileMd5,
-                    fileStream,
-                    fileUpload.getUserId(),
-                    fileUpload.getOrgTag(),
-                    fileUpload.isPublic()
-            );
 
             VectorizationService.VectorizationUsageResult result = vectorizationService.vectorizeWithUsage(
                     fileMd5,

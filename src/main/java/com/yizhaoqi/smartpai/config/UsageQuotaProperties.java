@@ -18,6 +18,13 @@ public class UsageQuotaProperties {
     
     private DailyTokenQuota llm = new DailyTokenQuota(true, 300_000);
     private DailyTokenQuota embedding = new DailyTokenQuota(true, 1_000_000);
+    private LocalAdminBypass localAdminBypass = new LocalAdminBypass();
+
+    @Data
+    public static class LocalAdminBypass {
+        private boolean enabled = false;
+        private String username = "admin";
+    }
 
     @Data
     public static class DailyTokenQuota {

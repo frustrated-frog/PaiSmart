@@ -33,7 +33,7 @@ public class DocumentVector {
     private String textContent;
 
     @Lob
-    @Column(name = "contextual_text")
+    @Column(name = "contextual_text", columnDefinition = "LONGTEXT")
     private String contextualText;
 
     @Column(name = "page_number")
