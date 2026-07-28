@@ -123,9 +123,10 @@ public class AgentToolRegistry {
         String query = getRequiredString(arguments, "query");
         int topK = getInt(arguments, "topK", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
 
-        RetrievalOutcome outcome = queryPlan == null
-                ? agenticRetrievalService.retrieve(query, userId, topK)
-                : agenticRetrievalService.retrieve(queryPlan, userId, topK);
+        // ReAct may deliberately rewrite the query after inspecting previous evidence.
+        // Reusing the intake plan here would silently discard that refinement and can
+        // trap the agent in repeated retrievals over the same query variants.
+        RetrievalOutcome outcome = agenticRetrievalService.retrieve(query, userId, topK);
         List<SearchResult> results = outcome.results();
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("query", query);

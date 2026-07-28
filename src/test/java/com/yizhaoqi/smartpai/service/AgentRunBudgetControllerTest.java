@@ -39,6 +39,21 @@ class AgentRunBudgetControllerTest {
     }
 
     @Test
+    void toolEnabledTurnsReserveTheLastModelTurnForConvergence() {
+        assertThat(controller.beforeToolEnabledModelTurn("run-1").allowed()).isTrue();
+
+        AgentRunBudgetController.BudgetDecision actionBlocked =
+                controller.beforeToolEnabledModelTurn("run-1");
+        AgentRunBudgetController.BudgetDecision convergenceAllowed =
+                controller.beforeModelTurn("run-1");
+
+        assertThat(actionBlocked.allowed()).isFalse();
+        assertThat(actionBlocked.terminalReason()).isEqualTo(AgentTerminalReason.ROUND_BUDGET_EXHAUSTED);
+        assertThat(convergenceAllowed.allowed()).isTrue();
+        assertThat(convergenceAllowed.usage().modelTurnsUsed()).isEqualTo(2);
+    }
+
+    @Test
     void blocksToolCallAfterConfiguredLimit() {
         assertThat(controller.beforeToolCall("run-1").allowed()).isTrue();
 

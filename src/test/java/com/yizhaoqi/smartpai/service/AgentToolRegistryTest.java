@@ -23,7 +23,7 @@ import static org.mockito.Mockito.when;
 class AgentToolRegistryTest {
 
     @Test
-    void searchToolReusesRunQueryPlan() {
+    void searchToolExecutesTheModelRewrittenQuery() {
         AgenticRetrievalService retrievalService = mock(AgenticRetrievalService.class);
         QueryPlan plan = plan();
         RetrievalOutcome outcome = new RetrievalOutcome(
@@ -32,7 +32,7 @@ class AgentToolRegistryTest {
                 null,
                 0
         );
-        when(retrievalService.retrieve(plan, "7", 5)).thenReturn(outcome);
+        when(retrievalService.retrieve("模型生成的查询", "7", 5)).thenReturn(outcome);
         AgentToolRegistry registry = registry(retrievalService);
 
         AgentToolRegistry.ToolExecutionResult result = registry.executeTool(
@@ -44,8 +44,8 @@ class AgentToolRegistryTest {
         );
 
         assertThat(result.success()).isTrue();
-        verify(retrievalService).retrieve(plan, "7", 5);
-        verify(retrievalService, never()).retrieve("模型生成的查询", "7", 5);
+        verify(retrievalService).retrieve("模型生成的查询", "7", 5);
+        verify(retrievalService, never()).retrieve(plan, "7", 5);
     }
 
     private AgentToolRegistry registry(AgenticRetrievalService retrievalService) {

@@ -33,13 +33,26 @@ public class AgentRunBudgetController {
     }
 
     public BudgetDecision beforeModelTurn(String generationId) {
+        return beforeModelTurn(generationId, false);
+    }
+
+    /**
+     * 为仍可调用工具的决策回合申请预算，并始终保留最后一个模型回合用于无工具收敛。
+     */
+    public BudgetDecision beforeToolEnabledModelTurn(String generationId) {
+        return beforeModelTurn(generationId, true);
+    }
+
+    private BudgetDecision beforeModelTurn(String generationId, boolean reserveConvergenceTurn) {
         MutableUsage usage = usage(generationId);
         synchronized (usage) {
             BudgetDecision common = checkCommon(usage);
             if (!common.allowed()) {
                 return common;
             }
-            if (usage.modelTurnsUsed >= positive(properties.getRuntime().getMaxModelTurns())) {
+            int maxModelTurns = positive(properties.getRuntime().getMaxModelTurns());
+            int usableTurns = reserveConvergenceTurn ? Math.max(0, maxModelTurns - 1) : maxModelTurns;
+            if (usage.modelTurnsUsed >= usableTurns) {
                 return denied(AgentTerminalReason.ROUND_BUDGET_EXHAUSTED, usage);
             }
             usage.modelTurnsUsed++;

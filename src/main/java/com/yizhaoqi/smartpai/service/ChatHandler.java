@@ -419,11 +419,16 @@ public class ChatHandler {
             if (finishCancelledGeneration(generationId, responseFuture, responseBuilders.get(generationId))) {
                 return;
             }
-            AgentRunBudgetController.BudgetDecision modelBudget = agentRunBudgetController.beforeModelTurn(generationId);
+            AgentRunBudgetController.BudgetDecision modelBudget =
+                    agentRunBudgetController.beforeToolEnabledModelTurn(generationId);
             if (!modelBudget.allowed()) {
                 forcedTerminalReason = modelBudget.terminalReason();
                 generationTerminalReasons.put(generationId, forcedTerminalReason);
-                sendBudgetStep(userId, generationId, conversationId, modelBudget);
+                if (forcedTerminalReason == AgentTerminalReason.ROUND_BUDGET_EXHAUSTED) {
+                    sendConvergenceReservedStep(userId, generationId, conversationId, modelBudget);
+                } else {
+                    sendBudgetStep(userId, generationId, conversationId, modelBudget);
+                }
                 break;
             }
 
@@ -835,12 +840,7 @@ public class ChatHandler {
         if (!(value instanceof EvidenceAssessment assessment)) {
             return null;
         }
-        return switch (assessment.suggestedAction()) {
-            case "ABSTAIN" -> AgentTerminalReason.INSUFFICIENT_EVIDENCE;
-            case "PARTIAL_ANSWER" -> AgentTerminalReason.PARTIAL_EVIDENCE;
-            case "ANSWER_WITH_CONFLICTS" -> AgentTerminalReason.CONFLICTED_EVIDENCE;
-            default -> null;
-        };
+        return AgentEvidencePolicy.terminalReason(assessment);
     }
 
     private String convergenceInstruction(AgentTerminalReason reason) {
@@ -1371,6 +1371,23 @@ public class ChatHandler {
                 "conversationId", conversationId,
                 "timestamp", System.currentTimeMillis()
         ));
+    }
+
+    private void sendConvergenceReservedStep(String userId,
+                                             String generationId,
+                                             String conversationId,
+                                             AgentRunBudgetController.BudgetDecision decision) {
+        sendAgentStep(userId, generationId, conversationId,
+                "runtime-budget-convergence-reserved",
+                "orchestration",
+                "completed",
+                "Agent 工具决策已收敛",
+                "已停止新增工具调用，并使用预留模型回合整理最终回答",
+                null,
+                Map.of(
+                        "terminalReason", decision.terminalReason().name(),
+                        "budget", decision.usage()
+                ));
     }
 
     private void sendResponseChunk(String userId, String generationId, String conversationId, String chunk) {
